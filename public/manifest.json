@@ -1,0 +1,22 @@
+{
+  "name": "Horizon Life",
+  "short_name": "HorizonLife",
+  "description": "Simulador de carreira e gestão financeira inspirado no universo de Forza Horizon",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0d14",
+  "theme_color": "#0f172a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.svg",
+      "type": "image/svg+xml",
+      "sizes": "512x512"
+    }
+  ]
+}
