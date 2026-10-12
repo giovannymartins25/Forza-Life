@@ -878,7 +878,7 @@ export const PropertyDetailModal: React.FC<PropertyDetailModalProps> = ({
             <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 space-y-1.5 text-xs">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-amber-400 uppercase font-mono">Regra de IPTU Horizon Life</span>
-                <span className="font-mono text-slate-400">Base: 25% do Valor Ref.</span>
+                <span className="font-mono text-slate-400">Base: 10% do Valor Ref.</span>
               </div>
               <p className="text-slate-300 text-[11px]">
                 Cobrança semanal com vencimento aos sábados. Juros compostos de 10% por dia após vencimento.

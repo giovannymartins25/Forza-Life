@@ -825,7 +825,7 @@ export class PropertyService {
   /**
    * Garante a criação de contas semanais de IPTU no sistema de contas oficial (billService)
    * Regras:
-   * - 25% do valor de referência original
+   * - 10% do valor de referência original
    * - Recorrência semanal
    * - Vencimento no sábado (todo o sábado disponível para pagamento)
    * - 10% de juros compostos diários após vencimento

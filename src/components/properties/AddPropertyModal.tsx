@@ -52,8 +52,8 @@ export const AddPropertyModal: React.FC<AddPropertyModalProps> = ({ isOpen, onCl
     });
   }, [numReference, condition, marketAdjustmentPercent]);
 
-  // IPTU semanal previsto (25% do valor de referência)
-  const estimatedIPTU = Math.round(numReference * 0.25 * 100) / 100;
+  // IPTU semanal previsto (10% do valor de referência)
+  const estimatedIPTU = Math.round(numReference * 0.10 * 100) / 100;
 
   const hasEnoughBalance = acquisitionType === 'registered' || currentBalance >= numPurchase;
 
@@ -351,7 +351,7 @@ export const AddPropertyModal: React.FC<AddPropertyModalProps> = ({ isOpen, onCl
             </span>
           </div>
           <div className="flex items-center justify-between text-xs border-t border-slate-850 pt-1.5">
-            <span className="text-slate-400 font-medium">IPTU Semanal Previsto (25% base):</span>
+            <span className="text-slate-400 font-medium">IPTU Semanal Previsto (10% base):</span>
             <span className="font-bold text-rose-400 font-mono">
               R$ {estimatedIPTU.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} / semana
             </span>

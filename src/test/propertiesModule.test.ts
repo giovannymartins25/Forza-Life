@@ -277,13 +277,13 @@ describe('Horizon Life — Módulo de Imóveis, Propriedades e Aluguéis (Fase I
   });
 
   describe('10. Criação e pagamento de IPTU', () => {
-    it('cria conta semanal de IPTU (25% do valor ref.) e debita no banco somente no momento do pagamento', async () => {
+    it('cria conta semanal de IPTU (10% do valor ref.) e debita no banco somente no momento do pagamento', async () => {
       await FinanceService.addMoney(100000, 'Saldo p/ contas');
 
       const prop = await PropertyService.createProperty({
         name: 'Sobrado Família',
         type: 'house',
-        referenceValue: 200000, // 25% = 50.000
+        referenceValue: 200000, // 10% = 20.000
         acquisitionType: 'registered',
         description: 'Sobrado amplo',
       });
