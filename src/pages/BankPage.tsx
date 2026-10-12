@@ -3,6 +3,7 @@ import { useCareer } from '../context/CareerContext';
 import { formatBRL } from '../utils/currency';
 import { TransactionHistory } from '../components/banking/TransactionHistory';
 import { BillsSection } from '../components/banking/BillsSection';
+import { CreditCardsSection } from '../components/banking/CreditCardsSection';
 import { CategoryBreakdown } from '../components/banking/CategoryBreakdown';
 import {
   Landmark,
@@ -135,6 +136,9 @@ export const BankPage: React.FC = () => {
 
       {/* 3. Seção Contas a Pagar */}
       <BillsSection />
+
+      {/* Crédito simulado integrado ao saldo somente no pagamento da fatura */}
+      <CreditCardsSection />
 
       {/* 4. Análise de Receitas e Despesas por Categoria */}
       <CategoryBreakdown />

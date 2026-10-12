@@ -127,6 +127,18 @@ describe('cloud sync protocol client', () => {
     expect(snapshotsEqual(save, different)).toBe(false);
   });
 
+  it('keeps legacy v8 snapshots compatible while detecting new card data in a cloud conflict', () => {
+    const local = structuredClone(save);
+    local.data.creditCards = [];
+    local.data.creditCardPurchases = [];
+    local.data.creditCardInvoices = [];
+    local.data.creditCardPayments = [];
+    local.data.creditLimitHistory = [];
+    expect(snapshotsEqual(save, local)).toBe(true);
+    local.data.creditCards = [{ id: 'card-1', name: 'Meu cartão', issuer: 'Horizon', brand: 'H', limit: 1000, interestRatePercent: 0, annualFee: 0, otherFee: 0, lateFeePercent: 0, dailyLateInterestPercent: 0, closingDay: 10, dueDay: 20, status: 'active', createdAt: '2026-10-12T00:00:00.000Z', limitGrowth: { enabled: false, increment: 100, maxLimit: 1000, minOnTimePayments: 3 } }];
+    expect(snapshotsEqual(save, local)).toBe(false);
+  });
+
   it('keeps only the acknowledged remote revision and a digest in local sync metadata', async () => {
     const digest = await CloudSyncService.fingerprint(save);
     const row = { id: 'row-a', revision: 3, save, updated_at: '2026-10-12T00:00:00Z' };

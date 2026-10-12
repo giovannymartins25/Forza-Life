@@ -36,6 +36,11 @@ export class BackupService {
     const ownedBusinesses = await db.getAll('owned_businesses');
     const businessRevenueCycles = await db.getAll('business_revenue_cycles');
     const businessExpenses = await db.getAll('business_expenses');
+    const creditCards = await db.getAll('credit_cards');
+    const creditCardPurchases = await db.getAll('credit_card_purchases');
+    const creditCardInvoices = await db.getAll('credit_card_invoices');
+    const creditCardPayments = await db.getAll('credit_card_payments');
+    const creditLimitHistory = await db.getAll('credit_limit_history');
 
     const backup: BackupData = {
       appName: 'Horizon Life',
@@ -64,6 +69,11 @@ export class BackupService {
         ownedBusinesses,
         businessRevenueCycles,
         businessExpenses,
+        creditCards,
+        creditCardPurchases,
+        creditCardInvoices,
+        creditCardPayments,
+        creditLimitHistory,
       },
     };
 
@@ -214,6 +224,27 @@ export class BackupService {
     if (!Array.isArray(obj.data.businessExpenses)) {
       obj.data.businessExpenses = [];
     }
+    for (const key of ['creditCards', 'creditCardPurchases', 'creditCardInvoices', 'creditCardPayments', 'creditLimitHistory'] as const) {
+      if (!Array.isArray(obj.data[key])) obj.data[key] = [];
+    }
+    const creditCards = obj.data.creditCards ?? [];
+    const creditCardPurchases = obj.data.creditCardPurchases ?? [];
+    const creditCardInvoices = obj.data.creditCardInvoices ?? [];
+    for (const card of creditCards) {
+      if (!card || typeof card.id !== 'string' || !card.id || typeof card.name !== 'string' || !card.name.trim() || !Number.isFinite(card.limit) || card.limit <= 0 || !Number.isFinite(card.interestRatePercent) || card.interestRatePercent < 0 || !Number.isFinite(card.annualFee) || card.annualFee < 0 || !Number.isFinite(card.otherFee) || card.otherFee < 0 || !Number.isFinite(card.lateFeePercent) || card.lateFeePercent < 0 || !Number.isFinite(card.dailyLateInterestPercent) || card.dailyLateInterestPercent < 0 || !Number.isInteger(card.closingDay) || card.closingDay < 1 || card.closingDay > 28 || !Number.isInteger(card.dueDay) || card.dueDay < 1 || card.dueDay > 28 || !['active', 'blocked', 'closed'].includes(card.status) || !card.limitGrowth || !Number.isFinite(card.limitGrowth.increment) || card.limitGrowth.increment < 0 || !Number.isFinite(card.limitGrowth.maxLimit) || card.limitGrowth.maxLimit < card.limit || !Number.isInteger(card.limitGrowth.minOnTimePayments) || card.limitGrowth.minOnTimePayments < 1) {
+        return { isValid: false, error: 'O backup contém uma configuração de cartão de crédito inválida.' };
+      }
+    }
+    for (const purchase of creditCardPurchases) {
+      if (!purchase || typeof purchase.id !== 'string' || typeof purchase.cardId !== 'string' || !Array.isArray(purchase.installments) || !Number.isFinite(purchase.totalAmount) || purchase.totalAmount < 0 || purchase.installments.some(item => !item || typeof item.id !== 'string' || typeof item.invoiceId !== 'string' || !Number.isFinite(item.amount) || item.amount < 0 || !Number.isFinite(item.paidAmount ?? 0) || (item.paidAmount ?? 0) < 0 || (item.paidAmount ?? 0) > item.amount)) {
+        return { isValid: false, error: 'O backup contém uma compra ou parcela de cartão inválida.' };
+      }
+    }
+    for (const invoice of creditCardInvoices) {
+      if (!invoice || typeof invoice.id !== 'string' || typeof invoice.cardId !== 'string' || !Number.isFinite(invoice.totalAmount) || invoice.totalAmount < 0 || !Number.isFinite(invoice.paidAmount) || invoice.paidAmount < 0 || invoice.paidAmount > invoice.totalAmount) {
+        return { isValid: false, error: 'O backup contém uma fatura de cartão inválida.' };
+      }
+    }
 
     return {
       isValid: true,
@@ -249,6 +280,11 @@ export class BackupService {
         'owned_businesses',
         'business_revenue_cycles',
         'business_expenses',
+        'credit_cards',
+        'credit_card_purchases',
+        'credit_card_invoices',
+        'credit_card_payments',
+        'credit_limit_history',
       ],
       'readwrite'
     );
@@ -274,6 +310,11 @@ export class BackupService {
     const bizStore = tx.objectStore('owned_businesses');
     const bizRevStore = tx.objectStore('business_revenue_cycles');
     const bizExpStore = tx.objectStore('business_expenses');
+    const cardStore = tx.objectStore('credit_cards');
+    const purchaseStore = tx.objectStore('credit_card_purchases');
+    const invoiceStore = tx.objectStore('credit_card_invoices');
+    const paymentStore = tx.objectStore('credit_card_payments');
+    const limitHistoryStore = tx.objectStore('credit_limit_history');
 
     // Limpa dados existentes somente dentro da transação após validação
     await careerStore.clear();
@@ -297,6 +338,11 @@ export class BackupService {
     await bizStore.clear();
     await bizRevStore.clear();
     await bizExpStore.clear();
+    await cardStore.clear();
+    await purchaseStore.clear();
+    await invoiceStore.clear();
+    await paymentStore.clear();
+    await limitHistoryStore.clear();
 
     // Restaura a carreira
     await careerStore.put(validatedBackup.data.career);
@@ -420,6 +466,11 @@ export class BackupService {
         await bizExpStore.put(be);
       }
     }
+    for (const item of validatedBackup.data.creditCards || []) await cardStore.put(item);
+    for (const item of validatedBackup.data.creditCardPurchases || []) await purchaseStore.put(item);
+    for (const item of validatedBackup.data.creditCardInvoices || []) await invoiceStore.put(item);
+    for (const item of validatedBackup.data.creditCardPayments || []) await paymentStore.put(item);
+    for (const item of validatedBackup.data.creditLimitHistory || []) await limitHistoryStore.put(item);
 
     await tx.done;
   }
@@ -434,6 +485,7 @@ export class BackupService {
       'rental_payments', 'property_expenses', 'owned_businesses',
       'housing_rental_contracts', 'vehicle_rental_contracts', 'vehicle_rental_payments',
       'business_revenue_cycles', 'business_expenses',
+      'credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history',
     ] as const;
     const tx = db.transaction([...storeNames], 'readwrite');
     for (const storeName of storeNames) await tx.objectStore(storeName).clear();
@@ -453,6 +505,7 @@ export class BackupService {
       'career', 'transactions', 'rideshare_rides', 'rideshare_shifts',
       'companies', 'job_openings', 'employments', 'salary_payments',
       'housing_rental_contracts', 'vehicle_rental_contracts', 'vehicle_rental_payments',
+      'credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history',
     ] as const;
     const tx = db.transaction([...storeNames], 'readwrite');
     for (const storeName of storeNames) {

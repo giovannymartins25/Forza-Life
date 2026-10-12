@@ -1,4 +1,6 @@
 import { getDatabase, INITIAL_CAREER_STATE } from './db';
+import type { HorizonLifeDBSchema } from './db';
+import type { IDBPTransaction, StoreNames } from 'idb';
 import type {
   CareerState,
   FinancialStats,
@@ -20,6 +22,9 @@ export interface ExecuteTransactionParams {
   customTimestamp?: string;
   /** Stable operation key for retry-safe recurring payments. */
   idempotencyKey?: string;
+  /** Optional domain stores and side effect committed in the same IndexedDB transaction. */
+  additionalStoreNames?: Array<StoreNames<HorizonLifeDBSchema>>;
+  atomicSideEffect?: (transaction: IDBPTransaction<HorizonLifeDBSchema, Array<StoreNames<HorizonLifeDBSchema>>, 'readwrite'>, financial: Transaction, career: CareerState) => Promise<void>;
 }
 
 export const TRANSACTION_CATEGORY_LABELS: Record<TransactionCategory, string> = {
@@ -52,6 +57,8 @@ export const TRANSACTION_CATEGORY_LABELS: Record<TransactionCategory, string> = 
   business_payroll: 'Folha de Pagamento (Negócio)',
   interest_fine: 'Juros e Multas',
   bill_payment: 'Pagamento de Contas',
+  credit_card_payment: 'Pagamento de Cartão de Crédito',
+  credit_card_refund: 'Estorno de Cartão de Crédito',
   vehicle_purchase: 'Compra de Veículo',
   other: 'Outras Despesas',
 };
@@ -114,7 +121,7 @@ export class FinanceService {
     transaction: Transaction;
     career: CareerState;
   }> {
-    const { type, category, amount, description, metadata, customTimestamp, idempotencyKey } = params;
+    const { type, category, amount, description, metadata, customTimestamp, idempotencyKey, additionalStoreNames, atomicSideEffect } = params;
 
     const roundedAmount = Math.round(amount * 100) / 100;
 
@@ -132,7 +139,8 @@ export class FinanceService {
     const db = await getDatabase();
 
     // Inicia uma transação atômica de leitura e escrita envolvendo ambas as tabelas
-    const tx = db.transaction(['career', 'transactions'], 'readwrite');
+    const storeNames = [...new Set<StoreNames<HorizonLifeDBSchema>>(['career', 'transactions', ...(additionalStoreNames || [])])];
+    const tx = db.transaction(storeNames, 'readwrite');
     // Previne Unhandled Rejection caso a transação seja abortada
     tx.done.catch(() => {});
 
@@ -202,11 +210,15 @@ export class FinanceService {
       updatedAt: nowIso,
     };
 
-    await Promise.all([
-      careerStore.put(updatedCareer),
-      transactionStore.add(newTransaction),
-      tx.done,
-    ]);
+    try {
+      await Promise.all([careerStore.put(updatedCareer), transactionStore.add(newTransaction)]);
+      if (atomicSideEffect) await atomicSideEffect(tx, newTransaction, updatedCareer);
+      await tx.done;
+    } catch (error) {
+      try { tx.abort(); } catch { /* The transaction may already have aborted. */ }
+      await tx.done.catch(() => undefined);
+      throw error;
+    }
 
     return {
       transaction: newTransaction,

@@ -21,10 +21,15 @@ import type {
   HousingRentalContract,
   VehicleRentalContract,
   VehicleRentalPayment,
+  CreditCard,
+  CreditCardPurchase,
+  CreditCardInvoice,
+  CreditCardPayment,
+  CreditLimitHistoryEntry,
 } from '../types';
 
 export const DB_NAME = 'horizon_life_db';
-export const DB_VERSION = 8;
+export const DB_VERSION = 9;
 
 export const DEFAULT_BILL_SETTINGS = {
   defaultDailyInterestRate: 0.10,
@@ -235,6 +240,11 @@ export interface HorizonLifeDBSchema extends DBSchema {
     value: VehicleRentalPayment;
     indexes: { 'by-contractId': string; 'by-vehicleId': string; 'by-paidAt': string };
   };
+  credit_cards: { key: string; value: CreditCard; indexes: { 'by-status': string } };
+  credit_card_purchases: { key: string; value: CreditCardPurchase; indexes: { 'by-cardId': string; 'by-purchasedAt': string } };
+  credit_card_invoices: { key: string; value: CreditCardInvoice; indexes: { 'by-cardId': string; 'by-dueDate': string } };
+  credit_card_payments: { key: string; value: CreditCardPayment; indexes: { 'by-invoiceId': string; 'by-cardId': string } };
+  credit_limit_history: { key: string; value: CreditLimitHistoryEntry; indexes: { 'by-cardId': string; 'by-changedAt': string } };
 }
 
 let dbPromise: Promise<IDBPDatabase<HorizonLifeDBSchema>> | null = null;
@@ -391,6 +401,33 @@ export function getDatabase(): Promise<IDBPDatabase<HorizonLifeDBSchema>> {
             payments.createIndex('by-contractId', 'contractId');
             payments.createIndex('by-vehicleId', 'vehicleId');
             payments.createIndex('by-paidAt', 'paidAt');
+          }
+        }
+        // v9: Cartões simulados, compras parceladas, faturas, pagamentos e histórico de limite.
+        if (oldVersion < 9) {
+          if (!db.objectStoreNames.contains('credit_cards')) {
+            const cards = db.createObjectStore('credit_cards', { keyPath: 'id' });
+            cards.createIndex('by-status', 'status');
+          }
+          if (!db.objectStoreNames.contains('credit_card_purchases')) {
+            const purchases = db.createObjectStore('credit_card_purchases', { keyPath: 'id' });
+            purchases.createIndex('by-cardId', 'cardId');
+            purchases.createIndex('by-purchasedAt', 'purchasedAt');
+          }
+          if (!db.objectStoreNames.contains('credit_card_invoices')) {
+            const invoices = db.createObjectStore('credit_card_invoices', { keyPath: 'id' });
+            invoices.createIndex('by-cardId', 'cardId');
+            invoices.createIndex('by-dueDate', 'dueDate');
+          }
+          if (!db.objectStoreNames.contains('credit_card_payments')) {
+            const payments = db.createObjectStore('credit_card_payments', { keyPath: 'id' });
+            payments.createIndex('by-invoiceId', 'invoiceId');
+            payments.createIndex('by-cardId', 'cardId');
+          }
+          if (!db.objectStoreNames.contains('credit_limit_history')) {
+            const history = db.createObjectStore('credit_limit_history', { keyPath: 'id' });
+            history.createIndex('by-cardId', 'cardId');
+            history.createIndex('by-changedAt', 'changedAt');
           }
         }
       },

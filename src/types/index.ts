@@ -31,6 +31,8 @@ export type TransactionCategory =
   | 'interest_fine'     // Juros e multas
   | 'vehicle_purchase'
   | 'bill_payment'      // Pagamento de conta a pagar
+  | 'credit_card_payment'
+  | 'credit_card_refund'
   | 'other';
 
 export interface Transaction {
@@ -43,6 +45,77 @@ export interface Transaction {
   timestamp: string; // ISO 8601 string
   createdAt: number; // Unix epoch ms
   metadata?: Record<string, unknown>;
+}
+
+export type CreditCardStatus = 'active' | 'blocked' | 'closed';
+export interface CreditLimitGrowthSettings {
+  enabled: boolean;
+  increment: number;
+  maxLimit: number;
+  minOnTimePayments: number;
+  minAccountAgeDays?: number;
+  maxUtilizationPercent?: number;
+  requireNoLatePayments?: boolean;
+}
+export interface CreditCard {
+  id: string;
+  name: string;
+  issuer: string;
+  brand: string;
+  limit: number;
+  interestRatePercent: number;
+  annualFee: number;
+  otherFee: number;
+  lateFeePercent: number;
+  dailyLateInterestPercent: number;
+  closingDay: number;
+  dueDay: number;
+  status: CreditCardStatus;
+  createdAt: string;
+  limitGrowth: CreditLimitGrowthSettings;
+}
+export interface CreditCardPurchase {
+  id: string;
+  cardId: string;
+  description: string;
+  category: string;
+  purchasedAt: string;
+  principalAmount: number;
+  interestAmount: number;
+  totalAmount: number;
+  installmentCount: number;
+  installments: Array<{ id: string; number: number; amount: number; invoiceId: string; paid: boolean; paidAmount?: number }>;
+  status: 'active' | 'cancelled' | 'refunded';
+  cancelledAt?: string;
+}
+export interface CreditCardInvoice {
+  id: string;
+  cardId: string;
+  cycleKey: string;
+  closingDate: string;
+  dueDate: string;
+  purchaseIds: string[];
+  totalAmount: number;
+  paidAmount: number;
+  status: 'open' | 'closed' | 'partially_paid' | 'paid' | 'overdue';
+  feeKeys: string[];
+}
+export interface CreditCardPayment {
+  id: string;
+  invoiceId: string;
+  cardId: string;
+  amount: number;
+  paidAt: string;
+  transactionId: string;
+}
+export interface CreditLimitHistoryEntry {
+  id: string;
+  cardId: string;
+  reason: string;
+  previousLimit: number;
+  newLimit: number;
+  changedAt: string;
+  invoiceId?: string;
 }
 
 export interface CareerLodging {
@@ -227,6 +300,11 @@ export interface BackupData {
     ownedBusinesses?: OwnedBusiness[];
     businessRevenueCycles?: BusinessRevenueCycle[];
     businessExpenses?: BusinessExpenseRecord[];
+    creditCards?: CreditCard[];
+    creditCardPurchases?: CreditCardPurchase[];
+    creditCardInvoices?: CreditCardInvoice[];
+    creditCardPayments?: CreditCardPayment[];
+    creditLimitHistory?: CreditLimitHistoryEntry[];
   };
 }
 

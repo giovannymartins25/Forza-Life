@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useCareer } from '../../context/CareerContext';
 import { formatBRL } from '../../utils/currency';
-import { Plus, Minus, User, Wallet, Pencil, Check, X } from 'lucide-react';
+import { Plus, Minus, User, Wallet, Pencil, Check, X, Menu } from 'lucide-react';
 
-export const Header: React.FC = () => {
+export const Header: React.FC<{ onOpenMenu: () => void }> = ({ onOpenMenu }) => {
   const { career, updatePilotName, setOpenDepositModal, setOpenWithdrawModal } = useCareer();
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(career?.pilotName || '');
@@ -113,7 +113,8 @@ export const Header: React.FC = () => {
 
         <button
           onClick={() => setOpenDepositModal(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+          aria-label="Depositar"
+          className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 rounded-xl text-xs font-bold transition-colors cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5 stroke-[3]" />
           <span className="hidden sm:inline">Depositar</span>
@@ -121,10 +122,19 @@ export const Header: React.FC = () => {
 
         <button
           onClick={() => setOpenWithdrawModal(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+          aria-label="Sacar"
+          className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold transition-colors cursor-pointer"
         >
           <Minus className="w-3.5 h-3.5 stroke-[3]" />
           <span className="hidden sm:inline">Sacar</span>
+        </button>
+
+        <button
+          onClick={onOpenMenu}
+          aria-label="Abrir menu de módulos"
+          className="lg:hidden inline-flex items-center justify-center w-10 h-10 rounded-xl border border-slate-700 bg-slate-900 text-slate-200 hover:text-amber-400 hover:border-amber-500/40"
+        >
+          <Menu className="w-5 h-5" />
         </button>
       </div>
     </header>

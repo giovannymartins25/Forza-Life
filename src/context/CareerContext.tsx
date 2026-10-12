@@ -24,6 +24,7 @@ import type {
   VehicleRentalPayment,
 } from '../types';
 import { FinanceService } from '../services/financeService';
+import { CreditCardService } from '../services/creditCardService';
 import { BackupService } from '../services/backupService';
 import {
   billService,
@@ -240,6 +241,11 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         await GarageService.ensureIPVABills();
       } catch (ipvaErr) {
         console.error('Falha ao gerar IPVA automático:', ipvaErr);
+      }
+      try {
+        await CreditCardService.processConfiguredFees();
+      } catch (cardFeeErr) {
+        console.error('Falha ao processar tarifas de cartões:', cardFeeErr);
       }
       try {
         await PropertyService.processHousingRentalBills();

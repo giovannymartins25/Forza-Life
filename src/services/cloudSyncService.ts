@@ -112,7 +112,14 @@ export class CloudSyncService {
   static async localSnapshot(): Promise<BackupData> { return BackupService.exportBackup(); }
   static async fingerprint(save: BackupData): Promise<string> {
     if (!globalThis.crypto?.subtle) throw new Error('Este navegador não oferece hash seguro para validar a revisão local.');
-    const bytes = new TextEncoder().encode(JSON.stringify(save.data));
+    const bytes = new TextEncoder().encode(JSON.stringify({
+      ...save.data,
+      creditCards: save.data.creditCards ?? [],
+      creditCardPurchases: save.data.creditCardPurchases ?? [],
+      creditCardInvoices: save.data.creditCardInvoices ?? [],
+      creditCardPayments: save.data.creditCardPayments ?? [],
+      creditLimitHistory: save.data.creditLimitHistory ?? [],
+    }));
     const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
   }
@@ -140,5 +147,13 @@ export class CloudSyncService {
 }
 
 export function snapshotsEqual(a: BackupData, b: BackupData): boolean {
-  return JSON.stringify(a.data) === JSON.stringify(b.data);
+  const canonicalize = (save: BackupData) => ({
+    ...save.data,
+    creditCards: save.data.creditCards ?? [],
+    creditCardPurchases: save.data.creditCardPurchases ?? [],
+    creditCardInvoices: save.data.creditCardInvoices ?? [],
+    creditCardPayments: save.data.creditCardPayments ?? [],
+    creditLimitHistory: save.data.creditLimitHistory ?? [],
+  });
+  return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
 }
