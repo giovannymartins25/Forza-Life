@@ -13,6 +13,7 @@ import {
 import { CURRENT_BACKUP_SCHEMA_VERSION, BackupService } from '../services/backupService';
 import { FinanceService } from '../services/financeService';
 import type { BackupData } from '../types';
+import { CloudSyncPanel } from '../components/settings/CloudSyncPanel';
 
 export const SettingsPage: React.FC = () => {
   const {
@@ -181,6 +182,8 @@ export const SettingsPage: React.FC = () => {
       </div>
 
       {/* Backup and Restore Section */}
+      <CloudSyncPanel />
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Export Backup Card */}
         <div className="p-6 rounded-3xl bg-slate-900/60 border border-slate-800 flex flex-col justify-between space-y-4">

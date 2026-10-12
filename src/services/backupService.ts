@@ -1,7 +1,7 @@
 import { getDatabase, INITIAL_CAREER_STATE } from './db';
 import type { BackupData, CareerState, Transaction } from '../types';
 
-export const CURRENT_BACKUP_SCHEMA_VERSION = 7;
+export const CURRENT_BACKUP_SCHEMA_VERSION = 8;
 
 export interface ValidationBackupResult {
   isValid: boolean;
@@ -29,6 +29,9 @@ export class BackupService {
     const properties = await db.getAll('properties');
     const rentalContracts = await db.getAll('rental_contracts');
     const rentalPayments = await db.getAll('rental_payments');
+    const housingRentalContracts = await db.getAll('housing_rental_contracts');
+    const vehicleRentalContracts = await db.getAll('vehicle_rental_contracts');
+    const vehicleRentalPayments = await db.getAll('vehicle_rental_payments');
     const propertyExpenses = await db.getAll('property_expenses');
     const ownedBusinesses = await db.getAll('owned_businesses');
     const businessRevenueCycles = await db.getAll('business_revenue_cycles');
@@ -54,6 +57,9 @@ export class BackupService {
         properties,
         rentalContracts,
         rentalPayments,
+        housingRentalContracts,
+        vehicleRentalContracts,
+        vehicleRentalPayments,
         propertyExpenses,
         ownedBusinesses,
         businessRevenueCycles,
@@ -192,6 +198,9 @@ export class BackupService {
     if (!Array.isArray(obj.data.rentalPayments)) {
       obj.data.rentalPayments = [];
     }
+    if (!Array.isArray(obj.data.housingRentalContracts)) obj.data.housingRentalContracts = [];
+    if (!Array.isArray(obj.data.vehicleRentalContracts)) obj.data.vehicleRentalContracts = [];
+    if (!Array.isArray(obj.data.vehicleRentalPayments)) obj.data.vehicleRentalPayments = [];
     if (!Array.isArray(obj.data.propertyExpenses)) {
       obj.data.propertyExpenses = [];
     }
@@ -233,6 +242,9 @@ export class BackupService {
         'properties',
         'rental_contracts',
         'rental_payments',
+        'housing_rental_contracts',
+        'vehicle_rental_contracts',
+        'vehicle_rental_payments',
         'property_expenses',
         'owned_businesses',
         'business_revenue_cycles',
@@ -255,6 +267,9 @@ export class BackupService {
     const propStore = tx.objectStore('properties');
     const rentContractStore = tx.objectStore('rental_contracts');
     const rentPayStore = tx.objectStore('rental_payments');
+    const housingRentStore = tx.objectStore('housing_rental_contracts');
+    const vehicleRentStore = tx.objectStore('vehicle_rental_contracts');
+    const vehicleRentPayStore = tx.objectStore('vehicle_rental_payments');
     const propExpStore = tx.objectStore('property_expenses');
     const bizStore = tx.objectStore('owned_businesses');
     const bizRevStore = tx.objectStore('business_revenue_cycles');
@@ -275,6 +290,9 @@ export class BackupService {
     await propStore.clear();
     await rentContractStore.clear();
     await rentPayStore.clear();
+    await housingRentStore.clear();
+    await vehicleRentStore.clear();
+    await vehicleRentPayStore.clear();
     await propExpStore.clear();
     await bizStore.clear();
     await bizRevStore.clear();
@@ -371,6 +389,9 @@ export class BackupService {
         await rentPayStore.put(rp);
       }
     }
+    for (const contract of validatedBackup.data.housingRentalContracts || []) await housingRentStore.put(contract);
+    for (const contract of validatedBackup.data.vehicleRentalContracts || []) await vehicleRentStore.put(contract);
+    for (const payment of validatedBackup.data.vehicleRentalPayments || []) await vehicleRentPayStore.put(payment);
 
     // Restaura despesas de imóveis se existirem
     if (validatedBackup.data.propertyExpenses && Array.isArray(validatedBackup.data.propertyExpenses)) {
@@ -411,6 +432,7 @@ export class BackupService {
       'rideshare_rides', 'rideshare_shifts', 'companies', 'job_openings',
       'employments', 'salary_payments', 'properties', 'rental_contracts',
       'rental_payments', 'property_expenses', 'owned_businesses',
+      'housing_rental_contracts', 'vehicle_rental_contracts', 'vehicle_rental_payments',
       'business_revenue_cycles', 'business_expenses',
     ] as const;
     const tx = db.transaction([...storeNames], 'readwrite');
@@ -430,6 +452,7 @@ export class BackupService {
     const storeNames = [
       'career', 'transactions', 'rideshare_rides', 'rideshare_shifts',
       'companies', 'job_openings', 'employments', 'salary_payments',
+      'housing_rental_contracts', 'vehicle_rental_contracts', 'vehicle_rental_payments',
     ] as const;
     const tx = db.transaction([...storeNames], 'readwrite');
     for (const storeName of storeNames) {

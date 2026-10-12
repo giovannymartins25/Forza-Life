@@ -19,6 +19,9 @@ import type {
   BusinessRevenueCycle,
   BusinessExpenseRecord,
   BusinessDashboardStats,
+  HousingRentalContract,
+  VehicleRentalContract,
+  VehicleRentalPayment,
 } from '../types';
 import { FinanceService } from '../services/financeService';
 import { BackupService } from '../services/backupService';
@@ -32,6 +35,7 @@ import {
   type RecordTripDTO,
   type RefuelDTO,
   type RepairDTO,
+  type CreateVehicleRentalDTO,
 } from '../services/garageService';
 import {
   RideshareService,
@@ -46,6 +50,7 @@ import {
   PropertyService,
   type CreatePropertyDTO,
   type CreateRentalContractDTO,
+  type CreateHousingRentalContractDTO,
   type CreatePropertyExpenseDTO,
 } from '../services/propertyService';
 import {
@@ -143,6 +148,14 @@ interface CareerContextType {
   terminateRentalContract: (contractId: string, notes?: string) => Promise<RentalContract>;
   addPropertyExpense: (dto: CreatePropertyExpenseDTO) => Promise<{ expense: PropertyExpense; transactionId?: string; updatedProperty: Property }>;
   processRentalPaymentsNow: () => Promise<{ processedCount: number; totalAmount: number }>;
+  housingRentalContracts: HousingRentalContract[];
+  createHousingRentalContract: (dto: CreateHousingRentalContractDTO) => Promise<HousingRentalContract>;
+  terminateHousingRentalContract: (id: string) => Promise<HousingRentalContract>;
+  vehicleRentalContracts: VehicleRentalContract[];
+  vehicleRentalPayments: VehicleRentalPayment[];
+  createVehicleRentalContract: (dto: CreateVehicleRentalDTO) => Promise<VehicleRentalContract>;
+  terminateVehicleRentalContract: (id: string) => Promise<VehicleRentalContract>;
+  processVehicleRentalPaymentsNow: () => Promise<{ processedCount: number; totalAmount: number }>;
   // Negócios Próprios
   ownedBusinesses: OwnedBusiness[];
   allOwnedBusinesses: OwnedBusiness[];
@@ -187,6 +200,9 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [allProperties, setAllProperties] = useState<Property[]>([]);
   const [rentalContracts, setRentalContracts] = useState<RentalContract[]>([]);
   const [rentalPayments, setRentalPayments] = useState<RentalPayment[]>([]);
+  const [housingRentalContracts, setHousingRentalContracts] = useState<HousingRentalContract[]>([]);
+  const [vehicleRentalContracts, setVehicleRentalContracts] = useState<VehicleRentalContract[]>([]);
+  const [vehicleRentalPayments, setVehicleRentalPayments] = useState<VehicleRentalPayment[]>([]);
   const [propertyExpenses, setPropertyExpenses] = useState<PropertyExpense[]>([]);
   const [propertyStats, setPropertyStats] = useState<PropertyDashboardStats | null>(null);
   const [ownedBusinesses, setOwnedBusinesses] = useState<OwnedBusiness[]>([]);
@@ -220,6 +236,16 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } catch (iptuErr) {
         console.error('Falha ao gerar IPTU automático:', iptuErr);
       }
+      try {
+        await GarageService.ensureIPVABills();
+      } catch (ipvaErr) {
+        console.error('Falha ao gerar IPVA automático:', ipvaErr);
+      }
+      try {
+        await PropertyService.processHousingRentalBills();
+      } catch (housingRentErr) {
+        console.error('Falha ao gerar obrigações de aluguel de moradia:', housingRentErr);
+      }
 
       // Processa vencimentos, juros idempotentes e ocorrências recorrentes
       await billService.processAllBills();
@@ -248,6 +274,11 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       } catch (rentErr) {
         console.error('Falha ao processar aluguéis automáticos:', rentErr);
+      }
+      try {
+        await GarageService.processVehicleRentalPayments();
+      } catch (vehicleRentErr) {
+        console.error('Falha ao processar receitas de aluguel de veículos:', vehicleRentErr);
       }
 
       const [
@@ -278,6 +309,9 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         bizRevCycles,
         bizExpList,
         bStats,
+        housingContractsList,
+        vehicleContractsList,
+        vehiclePaymentsList,
       ] = await Promise.all([
         FinanceService.getCareerState(),
         FinanceService.getFinancialStats(),
@@ -326,6 +360,9 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           return db.getAll('business_expenses');
         })(),
         BusinessService.getBusinessStats(),
+        PropertyService.getHousingRentalContracts(),
+        GarageService.getVehicleRentalContracts(),
+        GarageService.getVehicleRentalPayments(),
       ]);
 
       // Verifica regra do etanol se estiver ativada
@@ -359,6 +396,9 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setAllProperties(totalProps);
       setRentalContracts(contractsList);
       setRentalPayments(paymentsList);
+      setHousingRentalContracts(housingContractsList);
+      setVehicleRentalContracts(vehicleContractsList);
+      setVehicleRentalPayments(vehiclePaymentsList);
       setPropertyExpenses(expensesList);
       setPropertyStats(pStats);
       setOwnedBusinesses(activeBizList.filter((b: OwnedBusiness) => !b.isClosed && b.operationalStatus !== 'bankrupt'));
@@ -376,6 +416,12 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   useEffect(() => {
     refreshData();
+  }, [refreshData]);
+
+  useEffect(() => {
+    const refreshAfterCloudRestore = () => { void refreshData(); };
+    window.addEventListener('horizon:cloud-save-restored', refreshAfterCloudRestore);
+    return () => window.removeEventListener('horizon:cloud-save-restored', refreshAfterCloudRestore);
   }, [refreshData]);
 
   const addMoney = useCallback(
@@ -1090,6 +1136,41 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [addToast, refreshData]);
 
+  const createHousingRentalContract = useCallback(async (dto: CreateHousingRentalContractDTO) => {
+    const result = await PropertyService.createHousingRentalContract(dto);
+    addToast(`Contrato de moradia criado para ${result.propertyName}.`, 'success');
+    await refreshData();
+    return result;
+  }, [addToast, refreshData]);
+
+  const terminateHousingRentalContract = useCallback(async (id: string) => {
+    const result = await PropertyService.terminateHousingRentalContract(id);
+    addToast(`Contrato de moradia de ${result.propertyName} encerrado.`, 'info');
+    await refreshData();
+    return result;
+  }, [addToast, refreshData]);
+
+  const createVehicleRentalContract = useCallback(async (dto: CreateVehicleRentalDTO) => {
+    const result = await GarageService.createVehicleRentalContract(dto);
+    addToast(`Contrato de aluguel criado para ${result.vehicleName}.`, 'success');
+    await refreshData();
+    return result;
+  }, [addToast, refreshData]);
+
+  const terminateVehicleRentalContract = useCallback(async (id: string) => {
+    const result = await GarageService.terminateVehicleRentalContract(id);
+    addToast(`Contrato de aluguel de ${result.vehicleName} encerrado.`, 'info');
+    await refreshData();
+    return result;
+  }, [addToast, refreshData]);
+
+  const processVehicleRentalPaymentsNow = useCallback(async () => {
+    const result = await GarageService.processVehicleRentalPayments();
+    if (result.processedCount > 0) addToast(`Aluguéis de veículos creditados: R$ ${result.totalAmount.toFixed(2)}.`, 'success');
+    await refreshData();
+    return { processedCount: result.processedCount, totalAmount: result.totalAmount };
+  }, [addToast, refreshData]);
+
   // ── Negócios Próprios ────────────────────────────────────────────────────────
 
   const createBusiness = useCallback(
@@ -1300,6 +1381,14 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         terminateRentalContract,
         addPropertyExpense,
         processRentalPaymentsNow,
+        housingRentalContracts,
+        createHousingRentalContract,
+        terminateHousingRentalContract,
+        vehicleRentalContracts,
+        vehicleRentalPayments,
+        createVehicleRentalContract,
+        terminateVehicleRentalContract,
+        processVehicleRentalPaymentsNow,
         ownedBusinesses,
         allOwnedBusinesses,
         businessRevenueCycles,

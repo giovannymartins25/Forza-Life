@@ -12,7 +12,9 @@ import type {
   PropertyDashboardStats,
   Bill,
   JobPaymentFrequency,
+  HousingRentalContract,
 } from '../types';
+import { advanceRentalDueDate } from '../utils/recurrence';
 
 export interface CreatePropertyDTO {
   name: string;
@@ -37,6 +39,16 @@ export interface CreateRentalContractDTO {
   startDate: string; // ISO
   endDate?: string;  // ISO
   deposit?: number;  // Caução
+  notes?: string;
+}
+
+export interface CreateHousingRentalContractDTO {
+  propertyName: string;
+  address?: string;
+  rentAmount: number;
+  paymentFrequency: JobPaymentFrequency;
+  startDate: string;
+  nextPaymentDue?: string;
   notes?: string;
 }
 
@@ -170,6 +182,96 @@ export function getNextSaturdayDueDate(referenceDate: Date = new Date()): Date {
 }
 
 export class PropertyService {
+  static async getHousingRentalContracts(): Promise<HousingRentalContract[]> {
+    const db = await getDatabase();
+    return (await db.getAll('housing_rental_contracts')).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  static async createHousingRentalContract(dto: CreateHousingRentalContractDTO): Promise<HousingRentalContract> {
+    if (!dto.propertyName.trim()) throw new Error('Informe o nome ou identificação da moradia.');
+    if (!Number.isFinite(dto.rentAmount) || dto.rentAmount <= 0) throw new Error('O aluguel deve ser maior que zero.');
+    const start = new Date(dto.startDate);
+    if (!Number.isFinite(start.getTime())) throw new Error('Data inicial inválida.');
+    const due = dto.nextPaymentDue ? new Date(dto.nextPaymentDue) : advanceRentalDueDate(start, dto.paymentFrequency);
+    if (!Number.isFinite(due.getTime()) || due < start) throw new Error('O próximo vencimento deve ser na data inicial ou depois dela.');
+    const now = new Date().toISOString();
+    const contract: HousingRentalContract = {
+      id: `home_rent_${crypto.randomUUID()}`,
+      propertyName: dto.propertyName.trim(), address: dto.address?.trim() || undefined,
+      rentAmount: Math.round(dto.rentAmount * 100) / 100,
+      paymentFrequency: dto.paymentFrequency, startDate: start.toISOString(), nextPaymentDue: due.toISOString(),
+      monthlyAnchorDay: dto.paymentFrequency === 'monthly' ? (dto.nextPaymentDue ? due.getUTCDate() : start.getUTCDate()) : undefined,
+      status: 'active', periodsGenerated: 0, notes: dto.notes?.trim() || undefined,
+      createdAt: now, updatedAt: now,
+    };
+    const db = await getDatabase();
+    await db.add('housing_rental_contracts', contract);
+    await this.processHousingRentalBills(new Date());
+    return contract;
+  }
+
+  static async terminateHousingRentalContract(contractId: string, referenceDate: Date = new Date()): Promise<HousingRentalContract> {
+    const db = await getDatabase();
+    const contract = await db.get('housing_rental_contracts', contractId);
+    if (!contract) throw new Error('Contrato de moradia não encontrado.');
+    if (contract.status === 'terminated') return contract;
+    const now = referenceDate.toISOString();
+    const updated = { ...contract, status: 'terminated' as const, terminatedAt: now, updatedAt: now };
+    await db.put('housing_rental_contracts', updated);
+    const bills = await db.getAll('bills');
+    const terminationTime = new Date(now).getTime();
+    for (const bill of bills) {
+      if (bill.relatedAssetType === 'housing_contract' && bill.relatedAssetId === contractId && bill.status !== 'paid' && new Date(bill.dueDate).getTime() > terminationTime) {
+        await db.delete('bills', bill.id);
+      }
+    }
+    return updated;
+  }
+
+  /** Gera obrigações vencidas com IDs determinísticos por contrato e período. */
+  static async processHousingRentalBills(referenceDate: Date = new Date()): Promise<number> {
+    const db = await getDatabase();
+    const contracts = await db.getAll('housing_rental_contracts');
+    let created = 0;
+    for (const stored of contracts) {
+      if (stored.status !== 'active') continue;
+      const contract = { ...stored };
+      let due = new Date(contract.nextPaymentDue);
+      while (Number.isFinite(due.getTime())) {
+        const periodIndex = contract.periodsGenerated + 1;
+        const billId = `housingrent_${contract.id}_${periodIndex}`;
+        const existing = await db.get('bills', billId);
+        const isDue = due.getTime() <= referenceDate.getTime();
+        const priorPeriodDue = contract.lastBillDueDate ? new Date(contract.lastBillDueDate).getTime() : Number.POSITIVE_INFINITY;
+        const mayGenerate = contract.periodsGenerated === 0 || isDue || priorPeriodDue <= referenceDate.getTime();
+        if (!existing && !mayGenerate) break;
+        if (!existing) {
+          await billService.createBill({
+            id: billId,
+            name: `Aluguel de moradia - ${contract.propertyName}`,
+            description: `Período ${periodIndex} • Contrato ${contract.id}${contract.address ? ` • ${contract.address}` : ''}`,
+            category: 'housing_rent', amount: contract.rentAmount, dueDate: due.toISOString(), frequency: 'once',
+            relatedAssetId: contract.id, relatedAssetType: 'housing_contract',
+            dailyInterestRate: 0.10,
+          });
+          created++;
+        }
+        contract.periodsGenerated = periodIndex;
+        contract.lastBillId = billId;
+        contract.lastBillDueDate = due.toISOString();
+        const nextDue = advanceRentalDueDate(due, contract.paymentFrequency, contract.monthlyAnchorDay);
+        if (nextDue.getTime() <= due.getTime()) throw new Error('A periodicidade não avançou o vencimento.');
+        due = nextDue;
+        contract.nextPaymentDue = due.toISOString();
+        if (!isDue) break;
+      }
+      if (contract.periodsGenerated !== stored.periodsGenerated) {
+        contract.updatedAt = referenceDate.toISOString();
+        await db.put('housing_rental_contracts', contract);
+      }
+    }
+    return created;
+  }
   /**
    * Lista todos os imóveis cadastrados
    */
@@ -589,10 +691,11 @@ export class PropertyService {
               periodEnd,
               paidAt: referenceDate.toISOString(),
             },
+            idempotencyKey: `tx_rent_${contract.id}_${periodIndex}`,
           });
 
           const paymentRecord: RentalPayment = {
-            id: `rpay_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            id: `rpay_${contract.id}_${periodIndex}`,
             contractId: contract.id,
             propertyId: contract.propertyId,
             propertyName: contract.propertyName,

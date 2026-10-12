@@ -4,6 +4,7 @@ import { formatBRL } from '../../utils/currency';
 import { FUEL_LABELS } from '../../services/garageService';
 import { calculateDepreciatedPrice } from '../../utils/vehiclePrice';
 import { useCareer } from '../../context/CareerContext';
+import { VehicleRentalModal } from './VehicleRentalModal';
 import {
   Car,
   Fuel,
@@ -15,6 +16,7 @@ import {
   Zap,
   Pencil,
   X,
+  KeyRound,
 } from 'lucide-react';
 
 interface VehicleCardProps {
@@ -36,8 +38,9 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
   onOpenRepair,
   onOpenEdit,
 }) => {
-  const { sellVehicle, addToast } = useCareer();
+  const { sellVehicle, addToast, vehicleRentalContracts } = useCareer();
   const [showSell, setShowSell] = useState(false);
+  const [showRental, setShowRental] = useState(false);
   const [sellPrice, setSellPrice] = useState('');
   const [isSelling, setIsSelling] = useState(false);
 
@@ -53,6 +56,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
       : 0;
 
   const isInMaintenance = vehicle.status === 'in_maintenance';
+  const activeRental = vehicleRentalContracts.find(c => c.vehicleId === vehicle.id && c.status === 'active');
 
   // Tempo restante de manutenção
   let maintenanceMinutesLeft = 0;
@@ -110,13 +114,16 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
             {/* Edit button */}
             <button
               onClick={() => onOpenEdit(vehicle)}
+              disabled={!!activeRental}
               className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-amber-400 transition-colors cursor-pointer"
               title="Editar informações do veículo"
             >
               <Pencil className="w-3.5 h-3.5" />
             </button>
 
-            {isInMaintenance ? (
+            {activeRental ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30"><KeyRound className="w-3 h-3" />Alugado</span>
+            ) : isInMaintenance ? (
               <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30">
                 <Wrench className="w-3 h-3 animate-pulse" />
                 Oficina
@@ -289,9 +296,10 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
 
       {/* Action Buttons Toolbar */}
       <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap gap-1.5">
+        <button onClick={() => setShowRental(true)} className="flex-1 min-w-[105px] flex items-center justify-center gap-1 py-2 px-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 rounded-xl text-xs font-bold cursor-pointer"><KeyRound className="w-3.5 h-3.5" /><span>{activeRental ? 'Contrato' : 'Alugar'}</span></button>
         <button
           onClick={() => onOpenTrip(vehicle)}
-          disabled={isInMaintenance || vehicle.currentFuel <= 0}
+          disabled={isInMaintenance || !!activeRental || vehicle.currentFuel <= 0}
           className="flex-1 min-w-[70px] flex items-center justify-center gap-1 py-2 px-2.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 rounded-xl text-xs font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           title="Registrar viagem no gameplay (1 min = 10 km)"
         >
@@ -301,6 +309,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
 
         <button
           onClick={() => onOpenRefuel(vehicle)}
+          disabled={!!activeRental}
           className="flex-1 min-w-[70px] flex items-center justify-center gap-1 py-2 px-2.5 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 border border-sky-500/30 rounded-xl text-xs font-bold transition-all cursor-pointer"
           title="Abastecer no posto"
         >
@@ -318,6 +327,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
 
         <button
           onClick={() => onOpenRepair(vehicle)}
+          disabled={!!activeRental}
           className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
           title="Manutenção e Reparos Mecânicos"
         >
@@ -326,6 +336,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
 
         <button
           onClick={openSell}
+          disabled={!!activeRental}
           className="p-2 rounded-xl bg-slate-800 hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-400 transition-colors cursor-pointer"
           title="Vender Veículo"
         >
@@ -340,6 +351,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
           <Car className="w-4 h-4" />
         </button>
       </div>
+      <VehicleRentalModal vehicle={vehicle} isOpen={showRental} onClose={() => setShowRental(false)} />
     </div>
   );
 };

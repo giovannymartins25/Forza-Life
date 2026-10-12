@@ -10,6 +10,7 @@ import type {
 
 export interface CreateBillInput {
   name: string;
+  id?: string;
   description?: string;
   category: BillCategory;
   amount: number; // Em reais (ex: 150.50)
@@ -18,13 +19,14 @@ export interface CreateBillInput {
   customFrequencyDays?: number;
   dailyInterestRate?: number; // Padrão: 0.10 (10%)
   relatedAssetId?: string;
-  relatedAssetType?: 'vehicle' | 'property' | 'farm' | 'business';
+  relatedAssetType?: 'vehicle' | 'property' | 'farm' | 'business' | 'housing_contract' | 'vehicle_rental';
 }
 
 export const BILL_CATEGORY_LABELS: Record<BillCategory, string> = {
   fuel: 'Combustível',
   maintenance: 'Manutenção',
   vehicle_tax: 'IPVA (Veículo)',
+  housing_rent: 'Aluguel de Moradia',
   property_tax: 'IPTU (Imóvel)',
   property_expense: 'Contas de Imóvel',
   farm_expense: 'Custos da Fazenda',
@@ -163,8 +165,13 @@ class BillService {
     const daysOverdue = calculateDaysOverdue(dueDateObj.toISOString(), now);
     const { accruedInterestCents } = calculateBillInterest(originalAmountCents, dailyInterestRate, daysOverdue);
 
+    const db = await getDatabase();
+    if (input.id) {
+      const prior = await db.get('bills', input.id);
+      if (prior) return prior;
+    }
     const bill: Bill = {
-      id: crypto.randomUUID(),
+      id: input.id || crypto.randomUUID(),
       name: input.name.trim(),
       description: input.description?.trim() || undefined,
       category: input.category,
@@ -182,7 +189,6 @@ class BillService {
       lastInterestCalculatedAt: now.toISOString(),
     };
 
-    const db = await getDatabase();
     await db.put('bills', bill);
     return bill;
   }
@@ -255,7 +261,7 @@ class BillService {
     // Registrar saída financeira no serviço financeiro oficial
     const tx = await financeService.registerWithdrawal({
       amount: amountToPay,
-      category: 'bill_payment',
+      category: bill.category === 'housing_rent' ? 'housing_rent' : 'bill_payment',
       description: `Pagamento de conta: ${bill.name}`,
       metadata: {
         billId: bill.id,
@@ -264,6 +270,7 @@ class BillService {
         interestPaid: computed.accruedInterest,
         paidAt: now.toISOString(),
       },
+      idempotencyKey: `tx_billpay_${bill.id}`,
     });
 
     const paymentRecord: BillPaymentRecord = {
@@ -353,6 +360,10 @@ class BillService {
             } catch {
               // no-op
             }
+          }
+          if (currentBill.relatedAssetType === 'vehicle' && currentBill.relatedAssetId) {
+            const vehicle = await db.get('vehicles', currentBill.relatedAssetId);
+            if (!vehicle || vehicle.isSold) continue;
           }
 
           // Verificar se já existe uma conta filha/irmã com essa mesma data de vencimento

@@ -3,8 +3,10 @@ import { useCareer } from '../context/CareerContext';
 import { PropertyCard } from '../components/properties/PropertyCard';
 import { AddPropertyModal } from '../components/properties/AddPropertyModal';
 import { PropertyDetailModal } from '../components/properties/PropertyDetailModal';
+import { HousingRentalModal } from '../components/properties/HousingRentalModal';
 import type { Property, PropertyType } from '../types';
 import { PROPERTY_TYPE_LABELS } from '../services/propertyService';
+import { formatBRL } from '../utils/currency';
 import {
   Building2,
   Plus,
@@ -23,11 +25,14 @@ export const PropertiesPage: React.FC = () => {
     allProperties,
     propertyStats,
     processRentalPaymentsNow,
+    housingRentalContracts,
+    terminateHousingRentalContract,
   } = useCareer();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [isHousingModalOpen, setIsHousingModalOpen] = useState(false);
 
   // Filtros
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -113,7 +118,10 @@ export const PropertiesPage: React.FC = () => {
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button onClick={() => setIsHousingModalOpen(true)} className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-xs font-semibold cursor-pointer">
+            <Home className="w-4 h-4" /><span>Alugar para morar</span>
+          </button>
           <button
             onClick={handleProcessRent}
             disabled={isProcessingRent}
@@ -133,6 +141,11 @@ export const PropertiesPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      <section className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3"><div><h2 className="font-bold text-white">Moradia alugada por você</h2><p className="text-xs text-slate-400">Obrigações do contrato aparecem em Contas a Pagar. O pagamento é manual.</p></div><span className="text-xs text-sky-300">{housingRentalContracts.filter(c => c.status === 'active').length} ativo(s)</span></div>
+        {housingRentalContracts.length === 0 ? <p className="text-xs text-slate-500">Nenhum contrato de moradia cadastrado.</p> : <div className="space-y-2">{housingRentalContracts.map(contract => <div key={contract.id} className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 p-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-white">{contract.propertyName} <span className="text-[10px] text-sky-300">• {contract.status === 'active' ? 'Ativo' : 'Encerrado'}</span></p><p className="text-xs text-slate-400">{contract.address || 'Sem endereço'} • {formatBRL(contract.rentAmount)} / {contract.paymentFrequency === 'daily' ? '24h' : contract.paymentFrequency === 'weekly' ? 'semana' : 'mês'}</p><p className="text-[11px] text-slate-500">Próxima cobrança: {new Date(contract.nextPaymentDue).toLocaleDateString('pt-BR')} • {contract.periodsGenerated} obrigação(ões) gerada(s)</p></div>{contract.status === 'active' && <button onClick={() => terminateHousingRentalContract(contract.id)} className="rounded-lg border border-rose-500/30 px-3 py-2 text-xs font-semibold text-rose-300 hover:bg-rose-500/10">Encerrar contrato</button>}</div>)}</div>}
+      </section>
 
       {/* KPI Dashboard Indicators (Requisito 1) */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
@@ -334,6 +347,7 @@ export const PropertiesPage: React.FC = () => {
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
       />
+      <HousingRentalModal isOpen={isHousingModalOpen} onClose={() => setIsHousingModalOpen(false)} />
 
       <PropertyDetailModal
         property={selectedProperty}

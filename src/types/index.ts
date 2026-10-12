@@ -8,6 +8,7 @@ export type TransactionCategory =
   | 'rideshare_income'
   | 'farm_sale'
   | 'property_rent'
+  | 'vehicle_rent'
   | 'property_sale'
   | 'business_income'
   | 'business_revenue'  // Faturamento do negócio próprio
@@ -20,6 +21,7 @@ export type TransactionCategory =
   | 'vehicle_tax'       // IPVA
   | 'property_tax'      // IPTU
   | 'property_expense'
+  | 'housing_rent'
   | 'property_purchase'
   | 'property_maintenance'
   | 'farm_expense'
@@ -96,6 +98,18 @@ export interface ComponentWear {
   rear: number;          // 0% a 100%
   leftSide: number;      // 0% a 100%
   rightSide: number;     // 0% a 100%
+  tireFrontLeft: number;
+  tireFrontRight: number;
+  tireRearLeft: number;
+  tireRearRight: number;
+  shockFrontLeft: number;
+  shockFrontRight: number;
+  shockRearLeft: number;
+  shockRearRight: number;
+  brakeFrontLeft: number;
+  brakeFrontRight: number;
+  brakeRearLeft: number;
+  brakeRearRight: number;
   [key: string]: number; // componentes adicionais configuráveis
 }
 
@@ -206,6 +220,9 @@ export interface BackupData {
     properties?: Property[];
     rentalContracts?: RentalContract[];
     rentalPayments?: RentalPayment[];
+    housingRentalContracts?: HousingRentalContract[];
+    vehicleRentalContracts?: VehicleRentalContract[];
+    vehicleRentalPayments?: VehicleRentalPayment[];
     propertyExpenses?: PropertyExpense[];
     ownedBusinesses?: OwnedBusiness[];
     businessRevenueCycles?: BusinessRevenueCycle[];
@@ -245,6 +262,7 @@ export type BillCategory =
   | 'maintenance'
   | 'vehicle_tax'     // IPVA
   | 'property_tax'   // IPTU
+  | 'housing_rent'
   | 'property_expense'
   | 'farm_expense'
   | 'business_expense'
@@ -280,7 +298,7 @@ export interface Bill {
   status: BillStatus;
   /** ID do bem relacionado (veículo, imóvel etc.) — para IPVA/IPTU futuros */
   relatedAssetId?: string;
-  relatedAssetType?: 'vehicle' | 'property' | 'farm' | 'business';
+  relatedAssetType?: 'vehicle' | 'property' | 'farm' | 'business' | 'housing_contract' | 'vehicle_rental';
   /** Histórico de pagamentos */
   payments: BillPaymentRecord[];
   /** Última vez que os juros foram calculados (ISO) — idempotência */
@@ -527,6 +545,59 @@ export interface RentalPayment {
   periodEnd: string;              // ISO 8601
   paidAt: string;                 // ISO 8601
   transactionId: string;          // ID da movimentação no banco
+}
+
+export type RecurringRentalStatus = 'active' | 'terminated';
+
+/** Contrato de moradia ocupada pelo jogador; não é um ativo tributável nem renda de locação. */
+export interface HousingRentalContract {
+  id: string;
+  propertyName: string;
+  address?: string;
+  rentAmount: number;
+  paymentFrequency: JobPaymentFrequency;
+  monthlyAnchorDay?: number;
+  startDate: string;
+  nextPaymentDue: string;
+  status: RecurringRentalStatus;
+  periodsGenerated: number;
+  lastBillId?: string;
+  lastBillDueDate?: string;
+  terminatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  notes?: string;
+}
+
+export interface VehicleRentalContract {
+  id: string;
+  vehicleId: string;
+  vehicleName: string;
+  rentAmount: number;
+  paymentFrequency: JobPaymentFrequency;
+  monthlyAnchorDay?: number;
+  startDate: string;
+  nextPaymentDue: string;
+  status: RecurringRentalStatus;
+  periodsPaid: number;
+  lastPaidAt?: string;
+  terminatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  notes?: string;
+}
+
+export interface VehicleRentalPayment {
+  id: string;
+  contractId: string;
+  vehicleId: string;
+  vehicleName: string;
+  periodIndex: number;
+  amount: number;
+  periodStart: string;
+  periodEnd: string;
+  paidAt: string;
+  transactionId: string;
 }
 
 export interface PropertyExpense {

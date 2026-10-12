@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
 import { useCareer } from '../../context/CareerContext';
 import { formatBRL } from '../../utils/currency';
-import { GarageService } from '../../services/garageService';
+import { GarageService, DEFAULT_WEAR } from '../../services/garageService';
 import type { ComponentWear, Vehicle } from '../../types';
 import { Wrench, Clock, AlertTriangle } from 'lucide-react';
 
@@ -20,6 +20,12 @@ const COMPONENT_LABELS: Record<string, string> = {
   rear: 'Carroceria Traseira',
   leftSide: 'Lateral Esquerda',
   rightSide: 'Lateral Direita',
+  tireFrontLeft: 'Pneu dianteiro esquerdo', tireFrontRight: 'Pneu dianteiro direito',
+  tireRearLeft: 'Pneu traseiro esquerdo', tireRearRight: 'Pneu traseiro direito',
+  shockFrontLeft: 'Amortecedor dianteiro esquerdo', shockFrontRight: 'Amortecedor dianteiro direito',
+  shockRearLeft: 'Amortecedor traseiro esquerdo', shockRearRight: 'Amortecedor traseiro direito',
+  brakeFrontLeft: 'Disco dianteiro esquerdo', brakeFrontRight: 'Disco dianteiro direito',
+  brakeRearLeft: 'Disco traseiro esquerdo', brakeRearRight: 'Disco traseiro direito',
 };
 
 export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
@@ -44,8 +50,8 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
   };
 
   const selectAllWithWear = () => {
-    const withWear = (Object.keys(vehicle.wear) as (keyof ComponentWear)[]).filter(
-      (k) => (vehicle.wear[k] || 0) > 0
+    const withWear = (Object.keys(DEFAULT_WEAR) as (keyof ComponentWear)[]).filter(
+      (k) => ((vehicle.wear || {})[k] || 0) > 0
     );
     setSelected(withWear);
   };

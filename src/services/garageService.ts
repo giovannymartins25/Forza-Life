@@ -1,5 +1,7 @@
 import { getDatabase } from './db';
 import { FinanceService } from './financeService';
+import { billService } from './billService';
+import { getNextSaturdayDueDate } from './propertyService';
 import type {
   ComponentWear,
   EngineType,
@@ -8,7 +10,11 @@ import type {
   RepairDurationMinutes,
   Vehicle,
   VehicleEvent,
+  VehicleRentalContract,
+  VehicleRentalPayment,
+  JobPaymentFrequency,
 } from '../types';
+import { advanceRentalDueDate } from '../utils/recurrence';
 
 export const DEFAULT_WEAR: ComponentWear = {
   motor: 0,
@@ -18,6 +24,9 @@ export const DEFAULT_WEAR: ComponentWear = {
   rear: 0,
   leftSide: 0,
   rightSide: 0,
+  tireFrontLeft: 0, tireFrontRight: 0, tireRearLeft: 0, tireRearRight: 0,
+  shockFrontLeft: 0, shockFrontRight: 0, shockRearLeft: 0, shockRearRight: 0,
+  brakeFrontLeft: 0, brakeFrontRight: 0, brakeRearLeft: 0, brakeRearRight: 0,
 };
 
 export const DEFAULT_REPAIR_PERCENTAGES: RepairCostPercentage = {
@@ -28,6 +37,9 @@ export const DEFAULT_REPAIR_PERCENTAGES: RepairCostPercentage = {
   rear: 15,
   leftSide: 10,
   rightSide: 10,
+  tireFrontLeft: 10, tireFrontRight: 10, tireRearLeft: 10, tireRearRight: 10,
+  shockFrontLeft: 10, shockFrontRight: 10, shockRearLeft: 10, shockRearRight: 10,
+  brakeFrontLeft: 10, brakeFrontRight: 10, brakeRearLeft: 10, brakeRearRight: 10,
 };
 
 export const DEFAULT_REPAIR_DURATIONS: RepairDurationMinutes = {
@@ -38,6 +50,9 @@ export const DEFAULT_REPAIR_DURATIONS: RepairDurationMinutes = {
   rear: 30,
   leftSide: 20,
   rightSide: 20,
+  tireFrontLeft: 5, tireFrontRight: 5, tireRearLeft: 5, tireRearRight: 5,
+  shockFrontLeft: 30, shockFrontRight: 30, shockRearLeft: 30, shockRearRight: 30,
+  brakeFrontLeft: 5, brakeFrontRight: 5, brakeRearLeft: 5, brakeRearRight: 5,
 };
 
 export const FUEL_LABELS: Record<FuelType, string> = {
@@ -105,6 +120,15 @@ export interface RefuelDTO {
   notes?: string;
 }
 
+export interface CreateVehicleRentalDTO {
+  vehicleId: string;
+  rentAmount: number;
+  paymentFrequency: JobPaymentFrequency;
+  startDate: string;
+  nextPaymentDue?: string;
+  notes?: string;
+}
+
 export interface RecordTripDTO {
   vehicleId: string;
   gameplayMinutes: number;
@@ -118,6 +142,144 @@ export interface RepairDTO {
 }
 
 export class GarageService {
+  static async getVehicleRentalContracts(): Promise<VehicleRentalContract[]> {
+    const db = await getDatabase();
+    return (await db.getAll('vehicle_rental_contracts')).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  static async getVehicleRentalPayments(): Promise<VehicleRentalPayment[]> {
+    const db = await getDatabase();
+    return (await db.getAll('vehicle_rental_payments')).sort((a, b) => b.paidAt.localeCompare(a.paidAt));
+  }
+
+  static async getActiveVehicleRental(vehicleId: string): Promise<VehicleRentalContract | undefined> {
+    const db = await getDatabase();
+    const list = await db.getAllFromIndex('vehicle_rental_contracts', 'by-vehicleId', vehicleId);
+    return list.find((contract) => contract.status === 'active');
+  }
+
+  static async createVehicleRentalContract(dto: CreateVehicleRentalDTO): Promise<VehicleRentalContract> {
+    const vehicle = await this.getVehicleById(dto.vehicleId);
+    if (!vehicle || vehicle.isSold) throw new Error('Veículo não encontrado ou já vendido.');
+    if (vehicle.status !== 'available') throw new Error('Veículo indisponível: finalize a manutenção antes de alugar.');
+    if (!Number.isFinite(dto.rentAmount) || dto.rentAmount <= 0) throw new Error('O valor do aluguel deve ser maior que zero.');
+    const start = new Date(dto.startDate);
+    const due = dto.nextPaymentDue ? new Date(dto.nextPaymentDue) : advanceRentalDueDate(start, dto.paymentFrequency);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(due.getTime()) || due < start) throw new Error('Confira a data inicial e o próximo vencimento.');
+    const now = new Date().toISOString();
+    const db = await getDatabase();
+    const shifts = await db.getAllFromIndex('rideshare_shifts', 'by-vehicleId', vehicle.id);
+    if (shifts.some((shift) => shift.status === 'active')) throw new Error('Encerre o turno de motorista antes de alugar o veículo.');
+    const contract: VehicleRentalContract = {
+      id: `vehicle_rent_${crypto.randomUUID()}`, vehicleId: vehicle.id,
+      vehicleName: `${vehicle.brand} ${vehicle.model} (${vehicle.year})`,
+      rentAmount: Math.round(dto.rentAmount * 100) / 100, paymentFrequency: dto.paymentFrequency,
+      startDate: start.toISOString(), nextPaymentDue: due.toISOString(), status: 'active', periodsPaid: 0,
+      monthlyAnchorDay: dto.paymentFrequency === 'monthly' ? (dto.nextPaymentDue ? due.getUTCDate() : start.getUTCDate()) : undefined,
+      notes: dto.notes?.trim() || undefined, createdAt: now, updatedAt: now,
+    };
+    const contractTx = db.transaction('vehicle_rental_contracts', 'readwrite');
+    contractTx.done.catch(() => {});
+    const existing = await contractTx.store.index('by-vehicleId').getAll(vehicle.id);
+    if (existing.some((item) => item.status === 'active')) {
+      contractTx.abort();
+      throw new Error('Este veículo já possui um contrato de aluguel ativo.');
+    }
+    await contractTx.store.add(contract);
+    await contractTx.done;
+    return contract;
+  }
+
+  static async terminateVehicleRentalContract(contractId: string, referenceDate: Date = new Date()): Promise<VehicleRentalContract> {
+    const db = await getDatabase();
+    const contract = await db.get('vehicle_rental_contracts', contractId);
+    if (!contract) throw new Error('Contrato de aluguel do veículo não encontrado.');
+    if (contract.status === 'terminated') return contract;
+    const now = referenceDate.toISOString();
+    const updated = { ...contract, status: 'terminated' as const, terminatedAt: now, updatedAt: now };
+    await db.put('vehicle_rental_contracts', updated);
+    return updated;
+  }
+
+  static async processVehicleRentalPayments(referenceDate: Date = new Date()): Promise<{ processedCount: number; totalAmount: number; payments: VehicleRentalPayment[] }> {
+    const db = await getDatabase();
+    const contracts = await db.getAll('vehicle_rental_contracts');
+    const processed: VehicleRentalPayment[] = [];
+    let total = 0;
+    for (const stored of contracts) {
+      if (stored.status !== 'active') continue;
+      const contract = { ...stored };
+      const vehicle = await db.get('vehicles', contract.vehicleId);
+      if (!vehicle || vehicle.isSold) {
+        contract.status = 'terminated';
+        contract.terminatedAt = referenceDate.toISOString();
+        contract.updatedAt = referenceDate.toISOString();
+        await db.put('vehicle_rental_contracts', contract);
+        continue;
+      }
+      let due = new Date(contract.nextPaymentDue);
+      while (Number.isFinite(due.getTime()) && due.getTime() <= referenceDate.getTime()) {
+        const periodIndex = contract.periodsPaid + 1;
+        const paymentId = `vrentpay_${contract.id}_${periodIndex}`;
+        const oldPayment = await db.get('vehicle_rental_payments', paymentId);
+        if (!oldPayment) {
+          const periodStart = contract.lastPaidAt || contract.startDate;
+          const periodEnd = due.toISOString();
+          const tx = await FinanceService.executeTransaction({
+            type: 'DEPOSIT', category: 'vehicle_rent', amount: contract.rentAmount,
+            description: `Aluguel de veículo: ${contract.vehicleName}`,
+            metadata: { vehicleRentalContractId: contract.id, vehicleId: contract.vehicleId, periodIndex, periodStart, periodEnd },
+            customTimestamp: referenceDate.toISOString(),
+            idempotencyKey: `tx_${paymentId}`,
+          });
+          const payment: VehicleRentalPayment = {
+            id: paymentId, contractId: contract.id, vehicleId: contract.vehicleId,
+            vehicleName: contract.vehicleName, periodIndex, amount: contract.rentAmount,
+            periodStart, periodEnd, paidAt: referenceDate.toISOString(), transactionId: tx.transaction.id,
+          };
+          await db.put('vehicle_rental_payments', payment);
+          processed.push(payment);
+          total += payment.amount;
+        }
+        contract.periodsPaid = periodIndex;
+        contract.lastPaidAt = due.toISOString();
+        const next = advanceRentalDueDate(due, contract.paymentFrequency, contract.monthlyAnchorDay);
+        if (next.getTime() <= due.getTime()) throw new Error('A periodicidade não avançou o vencimento.');
+        due = next;
+        contract.nextPaymentDue = due.toISOString();
+      }
+      if (contract.periodsPaid !== stored.periodsPaid) {
+        contract.updatedAt = referenceDate.toISOString();
+        await db.put('vehicle_rental_contracts', contract);
+      }
+    }
+    return { processedCount: processed.length, totalAmount: Math.round(total * 100) / 100, payments: processed };
+  }
+  /** Cria a obrigação semanal de IPVA uma vez por veículo e vencimento. */
+  static async ensureIPVABills(referenceDate: Date = new Date()): Promise<void> {
+    const db = await getDatabase();
+    const [vehicles, bills, career] = await Promise.all([
+      db.getAll('vehicles'), db.getAll('bills'), FinanceService.getCareerState(),
+    ]);
+    const due = getNextSaturdayDueDate(referenceDate);
+    const dueDay = due.toDateString();
+    const rate = (career.settings?.billSettings?.ipvaRatePercent ?? 25) / 100;
+    for (const vehicle of vehicles) {
+      if (vehicle.isSold) continue;
+      if (bills.some((b) => b.category === 'vehicle_tax' && b.relatedAssetId === vehicle.id && new Date(b.dueDate).toDateString() === dueDay)) continue;
+      const amount = Math.round(vehicle.marketValue * rate * 100) / 100;
+      if (amount <= 0) continue;
+      const bill = await billService.createBill({
+        name: `IPVA - ${vehicle.brand} ${vehicle.model}`,
+        description: `IPVA semanal: ${Math.round(rate * 100)}% do valor de referência do veículo.`,
+        category: 'vehicle_tax', amount, dueDate: due.toISOString(), frequency: 'weekly',
+        dailyInterestRate: career.settings?.billSettings?.defaultDailyInterestRate ?? 0.10,
+        relatedAssetId: vehicle.id, relatedAssetType: 'vehicle',
+      });
+      bills.push(bill);
+    }
+  }
+
   /**
    * Obtém a lista de veículos. Por padrão, retorna veículos ativos (não vendidos).
    */
@@ -150,6 +312,20 @@ export class GarageService {
    * Verifica se o tempo de manutenção já terminou. Se sim, atualiza para disponível no banco.
    */
   static async checkAndUpdateMaintenance(vehicle: Vehicle): Promise<Vehicle> {
+    const legacyTireWear = vehicle.wear?.tires ?? 0;
+    const migratedWear: ComponentWear = {
+      ...DEFAULT_WEAR,
+      ...(vehicle.wear || {}),
+      tireFrontLeft: vehicle.wear?.tireFrontLeft ?? legacyTireWear,
+      tireFrontRight: vehicle.wear?.tireFrontRight ?? legacyTireWear,
+      tireRearLeft: vehicle.wear?.tireRearLeft ?? legacyTireWear,
+      tireRearRight: vehicle.wear?.tireRearRight ?? legacyTireWear,
+    };
+    if (Object.keys(DEFAULT_WEAR).some((key) => vehicle.wear?.[key] === undefined)) {
+      vehicle = { ...vehicle, wear: migratedWear };
+      const migrationDb = await getDatabase();
+      await migrationDb.put('vehicles', vehicle);
+    }
     if (vehicle.status === 'in_maintenance' && vehicle.maintenanceEndsAt) {
       const endsAt = new Date(vehicle.maintenanceEndsAt).getTime();
       if (Date.now() >= endsAt) {
@@ -250,6 +426,7 @@ export class GarageService {
     if (vehicle.isSold) {
       throw new Error('Este veículo já foi vendido anteriormente.');
     }
+    if (await this.getActiveVehicleRental(vehicleId)) throw new Error('Encerre o contrato de aluguel antes de vender o veículo.');
 
     // Creditar dinheiro no banco
     await FinanceService.executeTransaction({
@@ -297,6 +474,7 @@ export class GarageService {
   static async updateVehicle(id: string, updates: Partial<Vehicle>): Promise<Vehicle> {
     const vehicle = await this.getVehicleById(id);
     if (!vehicle) throw new Error('Veículo não encontrado.');
+    if (await this.getActiveVehicleRental(id)) throw new Error('Encerre o contrato de aluguel antes de editar o veículo.');
 
     const updated: Vehicle = {
       ...vehicle,
@@ -314,6 +492,8 @@ export class GarageService {
    */
   static async deleteVehicle(id: string): Promise<void> {
     const db = await getDatabase();
+    const rentalHistory = await db.getAllFromIndex('vehicle_rental_contracts', 'by-vehicleId', id);
+    if (rentalHistory.length) throw new Error('Veículo com histórico de aluguel não pode ser removido da garagem.');
     await db.delete('vehicles', id);
 
     // Remove eventos do veículo
@@ -345,6 +525,7 @@ export class GarageService {
     const vehicle = await this.getVehicleById(vehicleId);
     if (!vehicle) throw new Error('Veículo não encontrado.');
     if (vehicle.isSold) throw new Error('Não é possível abastecer um veículo já vendido.');
+    if (await this.getActiveVehicleRental(vehicleId)) throw new Error('Não é possível abastecer enquanto o veículo está alugado.');
 
     // Validar compatibilidade
     if (!vehicle.fuelCompatibility.includes(fuelType)) {
@@ -356,8 +537,12 @@ export class GarageService {
     }
 
     // Validar capacidade do tanque
-    const remainingCapacity = Math.round((vehicle.tankCapacity - vehicle.currentFuel) * 100) / 100;
-    if (liters > remainingCapacity + 0.01) {
+    const capacityCents = Math.floor(vehicle.tankCapacity * 100 + 1e-8);
+    const currentFuelCents = Math.round(vehicle.currentFuel * 100);
+    const remainingCents = Math.max(0, capacityCents - currentFuelCents);
+    const litersCents = Math.round(liters * 100);
+    const remainingCapacity = remainingCents / 100;
+    if (!Number.isFinite(liters) || litersCents <= 0 || litersCents > remainingCents) {
       throw new Error(
         `Volume excede a capacidade do tanque! Espaço disponível: ${remainingCapacity.toFixed(
           1
@@ -365,7 +550,8 @@ export class GarageService {
       );
     }
 
-    const totalCost = Math.round(liters * pricePerUnit * 100) / 100;
+    const effectiveLiters = litersCents / 100;
+    const totalCost = Math.round(effectiveLiters * pricePerUnit * 100) / 100;
 
     // Verificar saldo bancário
     const career = await FinanceService.getCareerState();
@@ -383,13 +569,13 @@ export class GarageService {
       type: 'WITHDRAWAL',
       category: 'fuel',
       amount: totalCost,
-      description: `Abastecimento (${liters.toFixed(1)}${unitLabel} de ${FUEL_LABELS[fuelType]}): ${vehicle.brand} ${vehicle.model}`,
-      metadata: { vehicleId, fuelType, liters, pricePerUnit, stationName },
+      description: `Abastecimento (${effectiveLiters.toFixed(2)}${unitLabel} de ${FUEL_LABELS[fuelType]}): ${vehicle.brand} ${vehicle.model}`,
+      metadata: { vehicleId, fuelType, liters: effectiveLiters, pricePerUnit, stationName },
     });
 
     const newFuel = Math.min(
       vehicle.tankCapacity,
-      Math.round((vehicle.currentFuel + liters) * 100) / 100
+      Math.round((vehicle.currentFuel + effectiveLiters) * 100) / 100
     );
 
     const nowIso = new Date().toISOString();
@@ -408,11 +594,11 @@ export class GarageService {
     const event = await this.recordVehicleEvent({
       vehicleId,
       type: 'refuel',
-      description: `Abastecido com ${liters.toFixed(1)}${unitLabel} de ${FUEL_LABELS[fuelType]} a R$ ${pricePerUnit.toFixed(2)}/${unitLabel}`,
+      description: `Abastecido com ${effectiveLiters.toFixed(2)}${unitLabel} de ${FUEL_LABELS[fuelType]} a R$ ${pricePerUnit.toFixed(2)}/${unitLabel}`,
       cost: totalCost,
       details: {
         fuelType,
-        liters,
+        liters: effectiveLiters,
         pricePerUnit,
         totalCost,
         stationName: stationName || 'Posto Horizon',
@@ -488,6 +674,7 @@ export class GarageService {
     if (vehicle.status === 'in_maintenance') {
       throw new Error('O veículo está em manutenção na oficina e não pode ser utilizado no momento.');
     }
+    if (await this.getActiveVehicleRental(vehicleId)) throw new Error('O veículo está alugado e não pode ser dirigido pelo proprietário.');
 
     const estimates = this.calculateTripEstimates(vehicle, gameplayMinutes);
 
@@ -538,16 +725,18 @@ export class GarageService {
    */
   static async updateWear(
     vehicleId: string,
-    newWear: ComponentWear,
+    newWear: Partial<ComponentWear>,
     notes?: string
   ): Promise<{ vehicle: Vehicle; event: VehicleEvent }> {
     const vehicle = await this.getVehicleById(vehicleId);
     if (!vehicle) throw new Error('Veículo não encontrado.');
 
     // Sanitizar valores entre 0 e 100
-    const sanitizedWear: ComponentWear = { ...newWear };
-    for (const key of Object.keys(sanitizedWear)) {
-      sanitizedWear[key] = Math.max(0, Math.min(100, Math.round(sanitizedWear[key])));
+    const sanitizedWear: ComponentWear = { ...DEFAULT_WEAR, ...(vehicle.wear || {}) };
+    for (const [key, value] of Object.entries(newWear)) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        sanitizedWear[key] = Math.max(0, Math.min(100, Math.round(value)));
+      }
     }
 
     const nowIso = new Date().toISOString();
@@ -637,6 +826,7 @@ export class GarageService {
     const vehicle = await this.getVehicleById(vehicleId);
     if (!vehicle) throw new Error('Veículo não encontrado.');
     if (vehicle.isSold) throw new Error('Não é possível reparar um veículo vendido.');
+    if (await this.getActiveVehicleRental(vehicleId)) throw new Error('Encerre o contrato de aluguel antes de enviar o veículo à oficina.');
 
     const { breakdown, totalCost, totalDurationMinutes } = this.calculateRepairCosts(
       vehicle,

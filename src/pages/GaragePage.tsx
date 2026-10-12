@@ -23,6 +23,7 @@ import {
   Wrench,
   DollarSign,
   RotateCcw,
+  RotateCw,
 } from 'lucide-react';
 
 /* ═══════════════════════════════════════════════════════════════
@@ -382,11 +383,12 @@ const VehicleDetailsModal: React.FC<VehicleDetailsModalProps> = ({ vehicle, onCl
 type GarageModal = 'none' | 'new' | 'trip' | 'refuel' | 'wear' | 'repair' | 'details' | 'edit';
 
 export const GaragePage: React.FC = () => {
-  const { vehicles, allVehicles, career } = useCareer();
+  const { vehicles, allVehicles, career, vehicleRentalContracts, processVehicleRentalPaymentsNow } = useCareer();
 
   const [activeModal, setActiveModal] = useState<GarageModal>('none');
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [processingRent, setProcessingRent] = useState(false);
 
   const soldVehicles = allVehicles.filter((v) => v.isSold);
   const garageValue = vehicles.reduce((acc, v) => acc + v.marketValue, 0);
@@ -414,14 +416,17 @@ export const GaragePage: React.FC = () => {
             Sua frota de veículos e histórico de aquisições
           </p>
         </div>
-        <button
-          onClick={() => openModal('new')}
-          className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-2xl shadow-lg shadow-amber-500/20 transition-all hover:scale-105 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span className="hidden sm:inline">Adicionar Veículo</span>
-          <span className="sm:hidden">Novo</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {vehicleRentalContracts.some(contract => contract.status === 'active') && <button onClick={async () => { setProcessingRent(true); try { await processVehicleRentalPaymentsNow(); } finally { setProcessingRent(false); } }} disabled={processingRent} className="flex items-center gap-2 rounded-2xl border border-sky-500/30 bg-sky-500/10 px-3 py-2.5 text-xs font-semibold text-sky-300 disabled:opacity-50"><RotateCw className={`w-3.5 h-3.5 ${processingRent ? 'animate-spin' : ''}`} /><span>Processar aluguéis</span></button>}
+          <button
+            onClick={() => openModal('new')}
+            className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-2xl shadow-lg shadow-amber-500/20 transition-all hover:scale-105 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span className="hidden sm:inline">Adicionar Veículo</span>
+            <span className="sm:hidden">Novo</span>
+          </button>
+        </div>
       </div>
 
       {/* ── Stats Strip ─────────────────────────────────────────── */}

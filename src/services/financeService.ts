@@ -18,6 +18,8 @@ export interface ExecuteTransactionParams {
   description: string;
   metadata?: Record<string, unknown>;
   customTimestamp?: string;
+  /** Stable operation key for retry-safe recurring payments. */
+  idempotencyKey?: string;
 }
 
 export const TRANSACTION_CATEGORY_LABELS: Record<TransactionCategory, string> = {
@@ -27,6 +29,7 @@ export const TRANSACTION_CATEGORY_LABELS: Record<TransactionCategory, string> = 
   rideshare_income: 'Motorista de Aplicativo',
   farm_sale: 'Agricultura e Colheitas',
   property_rent: 'Aluguéis de Imóveis',
+  vehicle_rent: 'Aluguel de Veículos',
   property_sale: 'Venda de Imóveis',
   business_income: 'Renda de Empresas',
   business_revenue: 'Faturamento de Negócios',
@@ -39,6 +42,7 @@ export const TRANSACTION_CATEGORY_LABELS: Record<TransactionCategory, string> = 
   maintenance: 'Manutenção de Veículos',
   vehicle_tax: 'IPVA (Veículo)',
   property_tax: 'IPTU (Imóvel)',
+  housing_rent: 'Aluguel de Moradia',
   property_expense: 'Contas de Imóvel',
   property_purchase: 'Compra de Imóvel',
   property_maintenance: 'Manutenção de Imóveis',
@@ -110,7 +114,7 @@ export class FinanceService {
     transaction: Transaction;
     career: CareerState;
   }> {
-    const { type, category, amount, description, metadata, customTimestamp } = params;
+    const { type, category, amount, description, metadata, customTimestamp, idempotencyKey } = params;
 
     const roundedAmount = Math.round(amount * 100) / 100;
 
@@ -134,6 +138,15 @@ export class FinanceService {
 
     const careerStore = tx.objectStore('career');
     const transactionStore = tx.objectStore('transactions');
+
+    if (idempotencyKey) {
+      const existing = await transactionStore.get(idempotencyKey);
+      if (existing) {
+        const current = await careerStore.get('current_career');
+        await tx.done;
+        return { transaction: existing, career: current || { ...INITIAL_CAREER_STATE } };
+      }
+    }
 
     let currentCareer = await careerStore.get('current_career');
     if (!currentCareer) {
@@ -167,7 +180,7 @@ export class FinanceService {
     const epochMs = new Date(nowIso).getTime();
     FinanceService.sequenceCounter++;
     const seqStr = String(FinanceService.sequenceCounter).padStart(6, '0');
-    const txId = `tx_${epochMs}_${seqStr}_${Math.random().toString(36).substring(2, 6)}`;
+    const txId = idempotencyKey || `tx_${epochMs}_${seqStr}_${Math.random().toString(36).substring(2, 6)}`;
 
     const newTransaction: Transaction = {
       id: txId,
@@ -284,6 +297,7 @@ export class FinanceService {
     category?: TransactionCategory;
     description: string;
     metadata?: Record<string, unknown>;
+    idempotencyKey?: string;
   }): Promise<Transaction> {
     const res = await this.executeTransaction({
       type: 'WITHDRAWAL',
@@ -291,6 +305,7 @@ export class FinanceService {
       amount: params.amount,
       description: params.description,
       metadata: params.metadata,
+      idempotencyKey: params.idempotencyKey,
     });
     return res.transaction;
   }

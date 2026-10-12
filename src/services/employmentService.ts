@@ -373,6 +373,7 @@ export class EmploymentService {
       const periodStartIso = new Date(periodStartMs).toISOString();
       const periodEndIso = new Date(periodEndMs).toISOString();
       const nowIso = new Date().toISOString();
+      const paymentId = `sal_${updatedEmployment.id}_${periodEndMs}`;
 
       // Credita salário no banco
       const txResult = await FinanceService.executeTransaction({
@@ -388,10 +389,11 @@ export class EmploymentService {
           periodStart: periodStartIso,
           periodEnd: periodEndIso,
         },
+        idempotencyKey: `tx_${paymentId}`,
       });
 
       const payment: SalaryPayment = {
-        id: `sal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${processedPayments.length}`,
+        id: paymentId,
         employmentId: updatedEmployment.id,
         companyId: updatedEmployment.companyId,
         companyName: updatedEmployment.companyName,

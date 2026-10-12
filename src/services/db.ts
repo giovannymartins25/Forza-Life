@@ -18,10 +18,13 @@ import type {
   OwnedBusiness,
   BusinessRevenueCycle,
   BusinessExpenseRecord,
+  HousingRentalContract,
+  VehicleRentalContract,
+  VehicleRentalPayment,
 } from '../types';
 
 export const DB_NAME = 'horizon_life_db';
-export const DB_VERSION = 7;
+export const DB_VERSION = 8;
 
 export const DEFAULT_BILL_SETTINGS = {
   defaultDailyInterestRate: 0.10,
@@ -217,6 +220,21 @@ export interface HorizonLifeDBSchema extends DBSchema {
       'by-date': string;
     };
   };
+  housing_rental_contracts: {
+    key: string;
+    value: HousingRentalContract;
+    indexes: { 'by-status': string; 'by-createdAt': string };
+  };
+  vehicle_rental_contracts: {
+    key: string;
+    value: VehicleRentalContract;
+    indexes: { 'by-vehicleId': string; 'by-status': string; 'by-createdAt': string };
+  };
+  vehicle_rental_payments: {
+    key: string;
+    value: VehicleRentalPayment;
+    indexes: { 'by-contractId': string; 'by-vehicleId': string; 'by-paidAt': string };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<HorizonLifeDBSchema>> | null = null;
@@ -355,7 +373,44 @@ export function getDatabase(): Promise<IDBPDatabase<HorizonLifeDBSchema>> {
             bExpStore.createIndex('by-date', 'date');
           }
         }
+        // v8: Contratos de moradia e aluguel recorrente de veículos. Sem apagar lojas existentes.
+        if (oldVersion < 8) {
+          if (!db.objectStoreNames.contains('housing_rental_contracts')) {
+            const housing = db.createObjectStore('housing_rental_contracts', { keyPath: 'id' });
+            housing.createIndex('by-status', 'status');
+            housing.createIndex('by-createdAt', 'createdAt');
+          }
+          if (!db.objectStoreNames.contains('vehicle_rental_contracts')) {
+            const contracts = db.createObjectStore('vehicle_rental_contracts', { keyPath: 'id' });
+            contracts.createIndex('by-vehicleId', 'vehicleId');
+            contracts.createIndex('by-status', 'status');
+            contracts.createIndex('by-createdAt', 'createdAt');
+          }
+          if (!db.objectStoreNames.contains('vehicle_rental_payments')) {
+            const payments = db.createObjectStore('vehicle_rental_payments', { keyPath: 'id' });
+            payments.createIndex('by-contractId', 'contractId');
+            payments.createIndex('by-vehicleId', 'vehicleId');
+            payments.createIndex('by-paidAt', 'paidAt');
+          }
+        }
       },
+    }).then((db) => {
+      // All domain modules share this connection. Observe committed writes here so
+      // cloud sync cannot miss entities whose services predate the sync layer.
+      const rawTransaction = db.transaction.bind(db);
+      Object.defineProperty(db, 'transaction', {
+        configurable: true,
+        value: (storeNames: string | string[], mode?: IDBTransactionMode, options?: IDBTransactionOptions) => {
+          const transaction = rawTransaction(storeNames as never, mode as never, options);
+          if (mode === 'readwrite' || mode === 'versionchange') {
+            transaction.done.then(() => {
+              if (typeof window !== 'undefined') window.dispatchEvent(new Event('horizon:database-committed'));
+            }).catch(() => undefined);
+          }
+          return transaction;
+        },
+      });
+      return db;
     });
   }
   return dbPromise;

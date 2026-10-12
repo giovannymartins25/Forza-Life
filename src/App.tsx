@@ -16,6 +16,7 @@ import { ProDriverPage } from './pages/ProDriverPage';
 import { PropertiesPage } from './pages/PropertiesPage';
 import { BusinessesPage } from './pages/BusinessesPage';
 import { Loader2 } from 'lucide-react';
+import { CloudSyncProvider } from './context/CloudSyncContext';
 
 const MainRouter: React.FC = () => {
   const { activeTab, setActiveTab, isLoading } = useCareer();
@@ -71,9 +72,11 @@ const MainRouter: React.FC = () => {
 
 export function App() {
   return (
-    <CareerProvider>
-      <MainRouter />
-    </CareerProvider>
+    <CloudSyncProvider>
+      <CareerProvider>
+        <MainRouter />
+      </CareerProvider>
+    </CloudSyncProvider>
   );
 }
 

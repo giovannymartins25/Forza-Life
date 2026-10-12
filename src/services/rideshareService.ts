@@ -117,6 +117,7 @@ export class RideshareService {
     if (vehicle.status === 'in_maintenance') {
       throw new Error('Este veículo está atualmente em manutenção na oficina.');
     }
+    if (await GarageService.getActiveVehicleRental(vehicleId)) throw new Error('Encerre o aluguel antes de usar o veículo em corridas.');
     if (vehicle.currentFuel <= 0) {
       const unit = vehicle.engineType === 'electric' ? 'kWh' : 'litros';
       throw new Error(`Veículo sem combustível (${vehicle.currentFuel} ${unit}). Abasteça antes de entrar em serviço.`);
@@ -187,6 +188,7 @@ export class RideshareService {
     if (vehicle.status === 'in_maintenance') {
       throw new Error('Veículo em manutenção não pode receber propostas.');
     }
+    if (await GarageService.getActiveVehicleRental(vehicleId)) throw new Error('Veículo alugado não pode receber propostas de corrida.');
 
     const settings = await this.getSettings();
     const ratePerKm = customRate && customRate > 0 ? customRate : settings.defaultRatePerKm;
@@ -290,6 +292,7 @@ export class RideshareService {
     if (vehicle.status === 'in_maintenance') {
       throw new Error('Veículo está em manutenção na oficina.');
     }
+    if (await GarageService.getActiveVehicleRental(vehicle.id)) throw new Error('Veículo alugado não pode realizar corridas.');
     if (vehicle.currentFuel < ride.estimatedFuelUnits) {
       const unit = vehicle.engineType === 'electric' ? 'kWh' : 'litros';
       throw new Error(
@@ -391,6 +394,7 @@ export class RideshareService {
     if (vehicle.status === 'in_maintenance') {
       throw new Error('O veículo está em manutenção na oficina.');
     }
+    if (await GarageService.getActiveVehicleRental(vehicle.id)) throw new Error('Veículo alugado não pode concluir corridas.');
 
     // Distâncias confirmadas
     const passengerDist =

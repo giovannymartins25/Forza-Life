@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '../common/Modal';
 import { useCareer } from '../../context/CareerContext';
+import { DEFAULT_WEAR } from '../../services/garageService';
 import type { ComponentWear, Vehicle } from '../../types';
 import { Gauge, Save, AlertCircle } from 'lucide-react';
 
@@ -10,34 +11,24 @@ interface WearModalProps {
   onClose: () => void;
 }
 
-const COMPONENT_LABELS: Record<string, string> = {
-  motor: 'Motor',
-  transmission: 'Transmissão',
-  tires: 'Pneus',
-  front: 'Carroceria Dianteira',
-  rear: 'Carroceria Traseira',
-  leftSide: 'Lateral Esquerda',
-  rightSide: 'Lateral Direita',
-};
+const COMPONENT_GROUPS = {
+  'Mecânica': { motor: 'Motor', transmission: 'Transmissão' },
+  'Pneus': { tireFrontLeft: 'Dianteiro esquerdo', tireFrontRight: 'Dianteiro direito', tireRearLeft: 'Traseiro esquerdo', tireRearRight: 'Traseiro direito' },
+  'Amortecedores': { shockFrontLeft: 'Dianteiro esquerdo', shockFrontRight: 'Dianteiro direito', shockRearLeft: 'Traseiro esquerdo', shockRearRight: 'Traseiro direito' },
+  'Discos de Freio': { brakeFrontLeft: 'Dianteiro esquerdo', brakeFrontRight: 'Dianteiro direito', brakeRearLeft: 'Traseiro esquerdo', brakeRearRight: 'Traseiro direito' },
+  'Carroceria': { front: 'Dianteira', rear: 'Traseira', leftSide: 'Lateral esquerda', rightSide: 'Lateral direita' },
+} satisfies Record<string, Record<string, string>>;
 
 export const WearModal: React.FC<WearModalProps> = ({ vehicle, isOpen, onClose }) => {
   const { updateWear } = useCareer();
-  const [wearValues, setWearValues] = useState<ComponentWear>({
-    motor: 0,
-    transmission: 0,
-    tires: 0,
-    front: 0,
-    rear: 0,
-    leftSide: 0,
-    rightSide: 0,
-  });
+  const [wearValues, setWearValues] = useState<ComponentWear>({ ...DEFAULT_WEAR });
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (vehicle) {
-      setWearValues({ ...vehicle.wear });
+      setWearValues({ ...DEFAULT_WEAR, ...vehicle.wear });
       setNotes('');
       setError(null);
     }
@@ -100,7 +91,11 @@ export const WearModal: React.FC<WearModalProps> = ({ vehicle, isOpen, onClose }
 
         {/* Sliders list */}
         <div className="space-y-3">
-          {Object.entries(COMPONENT_LABELS).map(([key, label]) => {
+          {Object.entries(COMPONENT_GROUPS).map(([group, components]) => (
+            <details key={group} open className="rounded-2xl border border-slate-800 bg-slate-950/40 p-3">
+              <summary className="cursor-pointer text-sm font-bold text-amber-300">{group}</summary>
+              <div className="mt-3 space-y-3">
+          {Object.entries(components).map(([key, label]) => {
             const currentVal = wearValues[key] ?? 0;
             const badge = getWearBadge(currentVal);
 
@@ -145,6 +140,9 @@ export const WearModal: React.FC<WearModalProps> = ({ vehicle, isOpen, onClose }
               </div>
             );
           })}
+              </div>
+            </details>
+          ))}
         </div>
 
         {/* Notes */}

@@ -41,7 +41,7 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
   const unit = isElectric ? 'kWh' : 'L';
   const remainingCapacity = Math.max(
     0,
-    Math.round((vehicle.tankCapacity - vehicle.currentFuel) * 10) / 10
+    Math.max(0, (Math.floor(vehicle.tankCapacity * 100 + 1e-8) - Math.round(vehicle.currentFuel * 100)) / 100)
   );
 
   const parsedPrice = parseFloat(pricePerUnit.replace(',', '.')) || 0;
@@ -181,8 +181,8 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
             </div>
             <input
               type="number"
-              step="0.1"
-              min="0.1"
+              step="0.01"
+              min="0.01"
               max={remainingCapacity}
               required
               value={litersStr}
