@@ -41,6 +41,7 @@ export class BackupService {
     const creditCardInvoices = await db.getAll('credit_card_invoices');
     const creditCardPayments = await db.getAll('credit_card_payments');
     const creditLimitHistory = await db.getAll('credit_limit_history');
+    const vehicleFinancingContracts = await db.getAll('vehicle_financings');
 
     const backup: BackupData = {
       appName: 'Horizon Life',
@@ -74,6 +75,7 @@ export class BackupService {
         creditCardInvoices,
         creditCardPayments,
         creditLimitHistory,
+        vehicleFinancingContracts,
       },
     };
 
@@ -227,6 +229,7 @@ export class BackupService {
     for (const key of ['creditCards', 'creditCardPurchases', 'creditCardInvoices', 'creditCardPayments', 'creditLimitHistory'] as const) {
       if (!Array.isArray(obj.data[key])) obj.data[key] = [];
     }
+    if (!Array.isArray(obj.data.vehicleFinancingContracts)) obj.data.vehicleFinancingContracts = [];
     const creditCards = obj.data.creditCards ?? [];
     const creditCardPurchases = obj.data.creditCardPurchases ?? [];
     const creditCardInvoices = obj.data.creditCardInvoices ?? [];
@@ -243,6 +246,11 @@ export class BackupService {
     for (const invoice of creditCardInvoices) {
       if (!invoice || typeof invoice.id !== 'string' || typeof invoice.cardId !== 'string' || !Number.isFinite(invoice.totalAmount) || invoice.totalAmount < 0 || !Number.isFinite(invoice.paidAmount) || invoice.paidAmount < 0 || invoice.paidAmount > invoice.totalAmount) {
         return { isValid: false, error: 'O backup contém uma fatura de cartão inválida.' };
+      }
+    }
+    for (const contract of obj.data.vehicleFinancingContracts) {
+      if (!contract || typeof contract.id !== 'string' || typeof contract.vehicleId !== 'string' || !['active', 'paid', 'terminated'].includes(contract.status) || !Number.isFinite(contract.purchasePrice) || contract.purchasePrice <= 0 || !Number.isFinite(contract.remainingBalance) || contract.remainingBalance < 0 || !Array.isArray(contract.installments) || contract.installments.some(item => !item || typeof item.id !== 'string' || !Number.isFinite(item.amount) || item.amount < 0 || !Number.isFinite(item.paidAmount) || item.paidAmount < 0 || item.paidAmount > item.amount)) {
+        return { isValid: false, error: 'O backup contém um contrato de financiamento de veículo inválido.' };
       }
     }
 
@@ -284,7 +292,7 @@ export class BackupService {
         'credit_card_purchases',
         'credit_card_invoices',
         'credit_card_payments',
-        'credit_limit_history',
+      'credit_limit_history', 'vehicle_financings',
       ],
       'readwrite'
     );
@@ -315,6 +323,7 @@ export class BackupService {
     const invoiceStore = tx.objectStore('credit_card_invoices');
     const paymentStore = tx.objectStore('credit_card_payments');
     const limitHistoryStore = tx.objectStore('credit_limit_history');
+    const financingStore = tx.objectStore('vehicle_financings');
 
     // Limpa dados existentes somente dentro da transação após validação
     await careerStore.clear();
@@ -471,6 +480,7 @@ export class BackupService {
     for (const item of validatedBackup.data.creditCardInvoices || []) await invoiceStore.put(item);
     for (const item of validatedBackup.data.creditCardPayments || []) await paymentStore.put(item);
     for (const item of validatedBackup.data.creditLimitHistory || []) await limitHistoryStore.put(item);
+    for (const item of validatedBackup.data.vehicleFinancingContracts || []) await financingStore.put(item);
 
     await tx.done;
   }
@@ -485,7 +495,7 @@ export class BackupService {
       'rental_payments', 'property_expenses', 'owned_businesses',
       'housing_rental_contracts', 'vehicle_rental_contracts', 'vehicle_rental_payments',
       'business_revenue_cycles', 'business_expenses',
-      'credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history',
+      'credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history', 'vehicle_financings',
     ] as const;
     const tx = db.transaction([...storeNames], 'readwrite');
     for (const storeName of storeNames) await tx.objectStore(storeName).clear();
@@ -505,7 +515,7 @@ export class BackupService {
       'career', 'transactions', 'rideshare_rides', 'rideshare_shifts',
       'companies', 'job_openings', 'employments', 'salary_payments',
       'housing_rental_contracts', 'vehicle_rental_contracts', 'vehicle_rental_payments',
-      'credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history',
+      'credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history', 'vehicle_financings',
     ] as const;
     const tx = db.transaction([...storeNames], 'readwrite');
     for (const storeName of storeNames) {

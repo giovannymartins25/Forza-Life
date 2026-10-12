@@ -34,9 +34,20 @@ export interface CreateCardInput {
   name: string; issuer: string; brand?: string; limit: number; interestRatePercent?: number;
   annualFee?: number; otherFee?: number; closingDay: number; dueDay: number;
   lateFeePercent?: number; dailyLateInterestPercent?: number;
+  category?: CreditCard['category'];
   limitGrowth?: Partial<CreditCard['limitGrowth']>;
 }
-export interface PurchaseInput { cardId: string; description: string; category?: string; amount: number; installmentCount?: number; interestRatePercent?: number; purchasedAt?: string }
+export interface PurchaseInput {
+  cardId: string; description: string; category?: string; amount: number;
+  installmentCount?: number; interestRatePercent?: number; purchasedAt?: string;
+  /** Chave estável para reprocessamento seguro de operações de domínio. */
+  idempotencyKey?: string;
+  atomicStoreNames?: Array<'vehicles' | 'vehicle_events' | 'bills'>;
+  /** Creates a separate fatura date on each consecutive calendar day (tax parcel schedule). */
+  consecutiveDailyInvoices?: boolean;
+  /** Executada na mesma transação IndexedDB da compra e das faturas. */
+  atomicSideEffect?: (io: { get: (storeName: string, key: string) => Promise<unknown>; put: (storeName: string, value: unknown) => Promise<void> }) => Promise<void>;
+}
 
 function validateCardInput(input: CreateCardInput) {
   if (!input.name.trim() || !input.issuer.trim()) throw new Error('Informe o nome do cartão e do emissor.');
@@ -46,7 +57,7 @@ function validateCardInput(input: CreateCardInput) {
   }
   if (!Number.isInteger(input.closingDay) || input.closingDay < 1 || input.closingDay > 28 || !Number.isInteger(input.dueDay) || input.dueDay < 1 || input.dueDay > 28) throw new Error('Fechamento e vencimento devem ser dias válidos entre 1 e 28.');
   const growth = input.limitGrowth;
-  if (growth && (growth.increment !== undefined && growth.increment < 0 || growth.maxLimit !== undefined && growth.maxLimit < input.limit || growth.minOnTimePayments !== undefined && (!Number.isInteger(growth.minOnTimePayments) || growth.minOnTimePayments < 1) || (growth.minAccountAgeDays !== undefined && (!Number.isInteger(growth.minAccountAgeDays) || growth.minAccountAgeDays < 0)) || (growth.maxUtilizationPercent !== undefined && (growth.maxUtilizationPercent < 0 || growth.maxUtilizationPercent > 100)))) throw new Error('Configuração de evolução de limite inválida.');
+  if (growth && (growth.increment !== undefined && growth.increment < 0 || growth.maxLimit !== undefined && growth.maxLimit < input.limit || growth.minOnTimePayments !== undefined && (!Number.isInteger(growth.minOnTimePayments) || growth.minOnTimePayments < 1) || (growth.minAccountAgeDays !== undefined && (!Number.isInteger(growth.minAccountAgeDays) || growth.minAccountAgeDays < 0)) || (growth.maxUtilizationPercent !== undefined && (growth.maxUtilizationPercent < 0 || growth.maxUtilizationPercent > 100)) || Object.values(growth.categoryThresholds ?? {}).some(value => !Number.isFinite(value) || value < 0))) throw new Error('Configuração de evolução de limite inválida.');
 }
 
 export class CreditCardService {
@@ -98,6 +109,31 @@ export class CreditCardService {
         if (changed) await store.put(invoice);
       }
     }
+    for (const invoice of await store.getAll()) {
+      if (!invoice.cycleKey.startsWith('daily:')) continue;
+      const card = cards.find(item => item.id === invoice.cardId);
+      let changed = false;
+      const due = new Date(invoice.dueDate); due.setHours(12, 0, 0, 0); due.setDate(due.getDate() + 1);
+      for (const lateDay = new Date(due); lateDay <= referenceDate; lateDay.setDate(lateDay.getDate() + 1)) {
+        const outstanding = cents(invoice.totalAmount) - cents(invoice.paidAmount);
+        if (outstanding <= 0) break;
+        const dateKey = `${lateDay.getFullYear()}-${String(lateDay.getMonth() + 1).padStart(2, '0')}-${String(lateDay.getDate()).padStart(2, '0')}`;
+        const penaltyKey = `daily-late-penalty:${invoice.cycleKey}`;
+        if (lateDay.getTime() === due.getTime() && card && card.lateFeePercent > 0 && !invoice.feeKeys.includes(penaltyKey)) {
+          invoice.totalAmount = (cents(invoice.totalAmount) + Math.round(outstanding * card.lateFeePercent / 100)) / 100; invoice.feeKeys.push(penaltyKey); created++; changed = true;
+        }
+        const interestKey = `daily-late-interest:${dateKey}`; const balance = cents(invoice.totalAmount) - cents(invoice.paidAmount);
+        if (card && card.dailyLateInterestPercent > 0 && !invoice.feeKeys.includes(interestKey)) {
+          invoice.totalAmount = (cents(invoice.totalAmount) + Math.round(balance * card.dailyLateInterestPercent / 100)) / 100; invoice.feeKeys.push(interestKey); created++; changed = true;
+        }
+      }
+      const nextStatus: CreditCardInvoice['status'] = invoice.paidAmount >= invoice.totalAmount && invoice.totalAmount > 0
+        ? 'paid'
+        : referenceDate > new Date(invoice.dueDate) ? 'overdue'
+          : referenceDate > new Date(invoice.closingDate) ? 'closed' : 'open';
+      if (invoice.status !== nextStatus) { invoice.status = nextStatus; changed = true; }
+      if (changed) await store.put(invoice);
+    }
     await tx.done; return created;
   }
 
@@ -109,7 +145,7 @@ export class CreditCardService {
 
   static async createCard(input: CreateCardInput): Promise<CreditCard> {
     validateCardInput(input);
-    const card: CreditCard = { id: makeId('card'), name: input.name.trim(), issuer: input.issuer.trim(), brand: input.brand?.trim() || 'Horizon', limit: money(input.limit), interestRatePercent: input.interestRatePercent ?? 0, annualFee: money(input.annualFee ?? 0), otherFee: money(input.otherFee ?? 0), lateFeePercent: input.lateFeePercent ?? 0, dailyLateInterestPercent: input.dailyLateInterestPercent ?? 0, closingDay: input.closingDay, dueDay: input.dueDay, status: 'active', createdAt: new Date().toISOString(), limitGrowth: { enabled: false, increment: 100, maxLimit: money(input.limit), minOnTimePayments: 3, minAccountAgeDays: 0, maxUtilizationPercent: 100, requireNoLatePayments: true, ...input.limitGrowth } };
+    const card: CreditCard = { id: makeId('card'), name: input.name.trim(), issuer: input.issuer.trim(), brand: input.brand?.trim() || 'Horizon', category: input.category ?? 'basic', limit: money(input.limit), interestRatePercent: input.interestRatePercent ?? 8.5, annualFee: money(input.annualFee ?? 120), otherFee: money(input.otherFee ?? 0), lateFeePercent: input.lateFeePercent ?? 2, dailyLateInterestPercent: input.dailyLateInterestPercent ?? 0.1, closingDay: input.closingDay, dueDay: input.dueDay, status: 'active', createdAt: new Date().toISOString(), limitGrowth: { enabled: true, increment: 250, maxLimit: Math.max(money(input.limit), 5000), minOnTimePayments: 3, minAccountAgeDays: 0, maxUtilizationPercent: 80, requireNoLatePayments: true, categoryThresholds: { basic: 0, gold: 5000, platinum: 15000, black: 30000 }, ...input.limitGrowth } };
     await (await getDatabase()).add('credit_cards', card);
     return card;
   }
@@ -140,18 +176,36 @@ export class CreditCardService {
   static async registerPurchase(input: PurchaseInput): Promise<CreditCardPurchase> {
     const count = input.installmentCount ?? 1; const rateInput = input.interestRatePercent;
     if (!input.description.trim() || !Number.isFinite(input.amount) || input.amount <= 0 || !Number.isInteger(count) || count < 1 || count > 60 || (rateInput !== undefined && (!Number.isFinite(rateInput) || rateInput < 0 || rateInput > 1000))) throw new Error('Confira descrição, valor, parcelas e juros da compra.');
-    const db = await getDatabase(); const tx = db.transaction(['credit_cards', 'credit_card_purchases', 'credit_card_invoices'], 'readwrite');
+    const db = await getDatabase();
+    const storeNames: Array<'credit_cards' | 'credit_card_purchases' | 'credit_card_invoices' | 'vehicles' | 'vehicle_events' | 'bills'> = ['credit_cards', 'credit_card_purchases', 'credit_card_invoices'];
+    storeNames.push(...(input.atomicStoreNames ?? []));
+    if (input.atomicSideEffect && !input.atomicStoreNames) storeNames.push('vehicles', 'vehicle_events');
+    const tx = db.transaction(storeNames, 'readwrite');
+    tx.done.catch(() => undefined);
+    try {
     const cardStore = tx.objectStore('credit_cards'); const card = await cardStore.get(input.cardId);
     if (!card || card.status !== 'active') throw new Error('O cartão precisa estar ativo para autorizar uma compra.');
-    const purchasesStore = tx.objectStore('credit_card_purchases'); const [existing, existingInvoices] = await Promise.all([purchasesStore.getAll(), tx.objectStore('credit_card_invoices').getAll()]);
+    const purchasesStore = tx.objectStore('credit_card_purchases');
+    const stablePurchaseId = input.idempotencyKey ? `purchase:${input.idempotencyKey}` : undefined;
+    if (stablePurchaseId) {
+      const previous = await purchasesStore.get(stablePurchaseId);
+      if (previous) { await tx.done; return previous; }
+    }
+    const [existing, existingInvoices] = await Promise.all([purchasesStore.getAll(), tx.objectStore('credit_card_invoices').getAll()]);
     const committed = cents(cardCommitment(card.id, existing, existingInvoices));
     const rate = rateInput ?? card.interestRatePercent;
     const principal = cents(input.amount); const total = cents(input.amount * (1 + rate / 100));
     if (total <= 0 || committed + total > cents(card.limit)) throw new Error('Limite disponível insuficiente para o valor total comprometido.');
     const start = new Date(input.purchasedAt ?? new Date().toISOString()); if (!Number.isFinite(start.getTime())) throw new Error('Data da compra inválida.');
+    const purchaseId = input.idempotencyKey ? `purchase:${input.idempotencyKey}` : makeId('purchase');
     const base = Math.floor(total / count); const remainder = total - base * count; const installments: CreditCardPurchase['installments'] = []; const invoicesStore = tx.objectStore('credit_card_invoices');
     for (let n = 0; n < count; n++) {
-      const d = new Date(start); const dayOfPurchase = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(dayOfPurchase, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); const cycle = invoiceCycle(card, d); const amount = base + (n === count - 1 ? remainder : 0);
+      const d = new Date(start); const dayOfPurchase = d.getDate();
+      if (input.consecutiveDailyInvoices) d.setDate(d.getDate() + n);
+      else { d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(dayOfPurchase, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); }
+      const dailyId = `invoice:${card.id}:daily:${purchaseId}:${n + 1}`;
+      const cycle = input.consecutiveDailyInvoices ? { id: dailyId, key: `daily:${purchaseId}:${n + 1}`, closingDate: d.toISOString(), dueDate: d.toISOString() } : invoiceCycle(card, d);
+      const amount = base + (n === count - 1 ? remainder : 0);
       let invoice = await invoicesStore.get(cycle.id);
       if (!invoice) invoice = { id: cycle.id, cardId: card.id, cycleKey: cycle.key, closingDate: cycle.closingDate, dueDate: cycle.dueDate, purchaseIds: [], totalAmount: 0, paidAmount: 0, status: new Date() > new Date(cycle.closingDate) ? 'closed' : 'open', feeKeys: [] };
       invoice.purchaseIds = [...new Set([...invoice.purchaseIds, `purchase:${card.id}`])];
@@ -159,9 +213,21 @@ export class CreditCardService {
       await invoicesStore.put(invoice);
       installments.push({ id: makeId('installment'), number: n + 1, amount: amount / 100, invoiceId: cycle.id, paid: false, paidAmount: 0 });
     }
-    const purchase: CreditCardPurchase = { id: makeId('purchase'), cardId: card.id, description: input.description.trim(), category: input.category?.trim() || 'outros', purchasedAt: start.toISOString(), principalAmount: principal / 100, interestAmount: (total - principal) / 100, totalAmount: total / 100, installmentCount: count, installments, status: 'active' };
+    const purchase: CreditCardPurchase = { id: purchaseId, cardId: card.id, description: input.description.trim(), category: input.category?.trim() || 'outros', purchasedAt: start.toISOString(), principalAmount: principal / 100, interestAmount: (total - principal) / 100, totalAmount: total / 100, installmentCount: count, installments, status: 'active' };
     for (const installment of installments) { const invoice = await invoicesStore.get(installment.invoiceId); invoice!.purchaseIds = invoice!.purchaseIds.filter(id => id !== `purchase:${card.id}`); invoice!.purchaseIds.push(purchase.id); await invoicesStore.put(invoice!); }
-    await purchasesStore.add(purchase); await tx.done; return purchase;
+    await purchasesStore.add(purchase);
+    if (input.atomicSideEffect) {
+      await input.atomicSideEffect({
+        get: async (storeName, key) => (tx.objectStore(storeName as 'vehicles' | 'vehicle_events' | 'bills') as unknown as { get(id: string): Promise<unknown> }).get(key),
+        put: async (storeName, value) => { await (tx.objectStore(storeName as 'vehicles' | 'vehicle_events' | 'bills') as unknown as { put(item: unknown): Promise<unknown> }).put(value); },
+      });
+    }
+    await tx.done; return purchase;
+    } catch (error) {
+      try { tx.abort(); } catch { /* A transação pode já ter sido abortada pelo navegador. */ }
+      await tx.done.catch(() => undefined);
+      throw error;
+    }
   }
 
   static async payInvoice(invoiceId: string, amount: number, operationId = makeId('cardpay')): Promise<CreditCardPayment> {
@@ -221,7 +287,11 @@ export class CreditCardService {
             const nextLimit = Math.min(cents(card.limitGrowth.maxLimit), cents(card.limit) + cents(card.limitGrowth.increment)) / 100;
             if (nextLimit > card.limit) {
               const entry: CreditLimitHistoryEntry = { id: `limit-growth:${invoice.id}`, cardId: card.id, reason: 'Pagamento pontual de fatura', previousLimit: card.limit, newLimit: nextLimit, changedAt: at, invoiceId: invoice.id };
-              card.limit = nextLimit; await cards.put(card); await historyStore.add(entry);
+              card.limit = nextLimit;
+              const thresholds = card.limitGrowth.categoryThresholds ?? { basic: 0, gold: 5000, platinum: 15000, black: 30000 };
+              const promoted = (['black', 'platinum', 'gold', 'basic'] as const).find(tier => nextLimit >= thresholds[tier]) ?? 'basic';
+              if (promoted !== card.category) { entry.reason += ` · categoria ${card.category ?? 'Básico'} → ${promoted}`; card.category = promoted; }
+              await cards.put(card); await historyStore.add(entry);
             }
           }
         }

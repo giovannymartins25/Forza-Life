@@ -48,6 +48,7 @@ export interface Transaction {
 }
 
 export type CreditCardStatus = 'active' | 'blocked' | 'closed';
+export type CreditCardCategory = 'basic' | 'gold' | 'platinum' | 'black';
 export interface CreditLimitGrowthSettings {
   enabled: boolean;
   increment: number;
@@ -56,12 +57,14 @@ export interface CreditLimitGrowthSettings {
   minAccountAgeDays?: number;
   maxUtilizationPercent?: number;
   requireNoLatePayments?: boolean;
+  categoryThresholds?: Record<CreditCardCategory, number>;
 }
 export interface CreditCard {
   id: string;
   name: string;
   issuer: string;
   brand: string;
+  category?: CreditCardCategory;
   limit: number;
   interestRatePercent: number;
   annualFee: number;
@@ -305,6 +308,7 @@ export interface BackupData {
     creditCardInvoices?: CreditCardInvoice[];
     creditCardPayments?: CreditCardPayment[];
     creditLimitHistory?: CreditLimitHistoryEntry[];
+    vehicleFinancingContracts?: VehicleFinancingContract[];
   };
 }
 
@@ -353,6 +357,8 @@ export interface BillPaymentRecord {
   amountPaid: number;   // Valor original + juros pagos
   originalAmount: number;
   interestPaid: number;
+  paymentMethod?: 'bank' | 'credit_card';
+  creditCardPurchaseId?: string;
 }
 
 export interface Bill {
@@ -390,8 +396,8 @@ export interface Bill {
 /* Configurações globais do sistema de contas */
 export interface BillSettings {
   defaultDailyInterestRate: number;   // Padrão: 0.10
-  ipvaRatePercent: number;            // 25
-  iptuRatePercent: number;            // 25
+  ipvaRatePercent: number;            // padrão: 10
+  iptuRatePercent: number;            // padrão: 10
   ipvaFrequency: BillFrequency;       // 'weekly'
   iptuFrequency: BillFrequency;       // 'weekly'
 }
@@ -676,6 +682,19 @@ export interface VehicleRentalPayment {
   periodEnd: string;
   paidAt: string;
   transactionId: string;
+}
+
+export interface VehicleFinancingInstallment {
+  id: string; number: number; dueDate: string; amount: number; paidAmount: number;
+  status: 'pending' | 'paid' | 'overdue'; lateFeeChargedCents?: number; paidAt?: string;
+  lateFeeKeys?: string[];
+}
+export interface VehicleFinancingContract {
+  id: string; vehicleId: string; vehicleName: string; status: 'active' | 'paid' | 'terminated';
+  purchasePrice: number; downPayment: number; principalAmount: number; interestRatePercent: number;
+  interestMethod: 'flat' | 'compound'; fees: number; originalTotal: number; remainingBalance: number;
+  lateFeePercent: number; dailyLateInterestPercent: number; installments: VehicleFinancingInstallment[];
+  startDate: string; firstDueDate: string; createdAt: string; terminatedAt?: string;
 }
 
 export interface PropertyExpense {

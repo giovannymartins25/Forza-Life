@@ -1,4 +1,4 @@
-import { getDatabase } from './db';
+import { getDatabase, INITIAL_CAREER_STATE } from './db';
 import { FinanceService } from './financeService';
 import { billService } from './billService';
 import { getNextSaturdayDueDate } from './propertyService';
@@ -13,8 +13,10 @@ import type {
   VehicleRentalContract,
   VehicleRentalPayment,
   JobPaymentFrequency,
+  VehicleFinancingContract,
 } from '../types';
 import { advanceRentalDueDate } from '../utils/recurrence';
+import { CreditCardService } from './creditCardService';
 
 export const DEFAULT_WEAR: ComponentWear = {
   motor: 0,
@@ -72,6 +74,7 @@ export const DEFAULT_FUEL_PRICES: Record<FuelType, number> = {
   electric_kwh: 1.15,
   hybrid: 5.89,
 };
+const formatCurrency = (value: number) => `R$ ${value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export function getDefaultFuelCompatibility(fuelType: FuelType): FuelType[] {
   switch (fuelType) {
@@ -118,6 +121,9 @@ export interface RefuelDTO {
   pricePerUnit: number;
   stationName?: string;
   notes?: string;
+  paymentMethod?: 'bank' | 'credit_card';
+  cardId?: string;
+  idempotencyKey?: string;
 }
 
 export interface CreateVehicleRentalDTO {
@@ -127,6 +133,12 @@ export interface CreateVehicleRentalDTO {
   startDate: string;
   nextPaymentDue?: string;
   notes?: string;
+}
+
+export interface FinanceVehicleDTO extends CreateVehicleDTO {
+  downPayment: number; installmentCount: number; interestRatePercent: number;
+  interestMethod: 'flat' | 'compound'; fees?: number; startDate: string; firstDueDate: string;
+  lateFeePercent?: number; dailyLateInterestPercent?: number; operationId: string;
 }
 
 export interface RecordTripDTO {
@@ -139,9 +151,134 @@ export interface RepairDTO {
   vehicleId: string;
   selectedComponents: (keyof ComponentWear)[];
   instantRepair?: boolean;
+  paymentMethod?: 'bank' | 'credit_card';
+  cardId?: string;
+  idempotencyKey?: string;
 }
 
 export class GarageService {
+  static async getVehicleFinancings(): Promise<VehicleFinancingContract[]> {
+    return (await (await getDatabase()).getAll('vehicle_financings')).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  static async getActiveVehicleFinancing(vehicleId: string): Promise<VehicleFinancingContract | undefined> {
+    return (await (await getDatabase()).getAllFromIndex('vehicle_financings', 'by-vehicleId', vehicleId)).find(item => item.status === 'active');
+  }
+  static async processVehicleFinancings(referenceDate = new Date()): Promise<number> {
+    const db = await getDatabase(); const storeTx = db.transaction('vehicle_financings', 'readwrite');
+    const store = storeTx.objectStore('vehicle_financings'); const contracts = await store.getAll(); let changed = 0;
+    for (const contract of contracts.filter(item => item.status === 'active')) {
+      let dirty = false;
+      for (const installment of contract.installments) {
+        if (installment.status === 'paid') continue;
+        const cursor = new Date(installment.dueDate); cursor.setHours(12, 0, 0, 0); cursor.setDate(cursor.getDate() + 1);
+        installment.lateFeeKeys ??= [];
+        while (cursor <= referenceDate) {
+          const dayKey = cursor.toISOString().slice(0, 10);
+          if (!installment.lateFeeKeys.includes(dayKey)) {
+            const outstanding = Math.max(0, Math.round((installment.amount - installment.paidAmount) * 100));
+            const charge = cursor.getTime() === new Date(new Date(installment.dueDate).setHours(12, 0, 0, 0)).getTime() + 86400000
+              ? Math.round(outstanding * contract.lateFeePercent / 100)
+              : Math.round(outstanding * contract.dailyLateInterestPercent / 100);
+            installment.amount = Math.round((installment.amount * 100 + charge)) / 100;
+            contract.remainingBalance = Math.round((contract.remainingBalance * 100 + charge)) / 100;
+            installment.lateFeeChargedCents = (installment.lateFeeChargedCents ?? 0) + charge;
+            installment.lateFeeKeys.push(dayKey); dirty = true;
+          }
+          cursor.setDate(cursor.getDate() + 1);
+        }
+        const overdue = new Date(installment.dueDate).getTime() < referenceDate.getTime();
+        if (overdue && installment.status !== 'overdue') { installment.status = 'overdue'; dirty = true; }
+      }
+      if (dirty) { await store.put(contract); changed++; }
+    }
+    await storeTx.done; return changed;
+  }
+
+  static calculateVehicleFinancing(price: number, downPayment: number, count: number, rate: number, method: 'flat' | 'compound', fees = 0) {
+    if (![price, downPayment, rate, fees].every(Number.isFinite) || price <= 0 || downPayment < 0 || downPayment >= price || rate < 0 || rate > 1000 || fees < 0 || !Number.isInteger(count) || count < 1 || count > 120) throw new Error('Confira preço, entrada, parcelas, juros e tarifas do financiamento.');
+    const principal = Math.round((price - downPayment) * 100);
+    const interest = method === 'flat' ? Math.round(principal * rate / 100 * count) : Math.round(principal * ((1 + rate / 100) ** count - 1));
+    const totalCents = principal + interest + Math.round(fees * 100);
+    if (!Number.isSafeInteger(totalCents) || totalCents <= 0) throw new Error('O custo total do financiamento excede o limite de cálculo seguro.');
+    return { principal: principal / 100, interest: interest / 100, fees: Math.round(fees * 100) / 100, total: totalCents / 100, installmentCents: Math.floor(totalCents / count), finalInstallmentCents: totalCents - Math.floor(totalCents / count) * (count - 1) };
+  }
+
+  static async buyVehicleFinanced(dto: FinanceVehicleDTO): Promise<{ vehicle: Vehicle; contract: VehicleFinancingContract }> {
+    const { downPayment, installmentCount, interestRatePercent, interestMethod, fees = 0, startDate, firstDueDate, operationId } = dto;
+    const price = dto.purchasePrice; const quote = this.calculateVehicleFinancing(price, downPayment, installmentCount, interestRatePercent, interestMethod, fees);
+    const start = new Date(startDate); let due = new Date(firstDueDate);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(due.getTime()) || due < start || !operationId) throw new Error('Data ou identificador da operação inválido.');
+    const contractId = `vehicle_finance:${operationId}`;
+    const priorContract = await (await getDatabase()).get('vehicle_financings', contractId);
+    if (priorContract) {
+      const priorVehicle = await this.getVehicleById(priorContract.vehicleId);
+      if (priorVehicle) return { vehicle: priorVehicle, contract: priorContract };
+      throw new Error('Foi encontrada uma operação de financiamento inconsistente; nenhum novo débito foi feito.');
+    }
+    const vehicle = this.buildVehicleEntity(dto, price);
+    const installments = Array.from({ length: installmentCount }, (_, index) => {
+      const amount = index === installmentCount - 1 ? quote.finalInstallmentCents : quote.installmentCents;
+      const item = { id: `${contractId}:installment:${index + 1}`, number: index + 1, dueDate: due.toISOString(), amount: amount / 100, paidAmount: 0, status: 'pending' as const };
+      due = new Date(due); due.setDate(due.getDate() + 1); return item;
+    });
+    const contract: VehicleFinancingContract = {
+      id: contractId, vehicleId: vehicle.id, vehicleName: `${vehicle.brand} ${vehicle.model} (${vehicle.year})`, status: 'active',
+      purchasePrice: price, downPayment: Math.round(downPayment * 100) / 100, principalAmount: quote.principal,
+      interestRatePercent, interestMethod, fees: quote.fees, originalTotal: quote.total, remainingBalance: quote.total,
+      lateFeePercent: dto.lateFeePercent ?? 2, dailyLateInterestPercent: dto.dailyLateInterestPercent ?? 0.1,
+      installments, startDate: start.toISOString(), firstDueDate: new Date(firstDueDate).toISOString(), createdAt: new Date().toISOString(),
+    };
+    const event: VehicleEvent = { id: `vehicle-financing:${operationId}`, vehicleId: vehicle.id, type: 'purchase', description: `Compra financiada: ${formatCurrency(price)} · entrada ${formatCurrency(downPayment)}`, cost: price, details: { financingContractId: contract.id, downPayment, financedTotal: quote.total, installmentCount }, timestamp: new Date().toISOString(), createdAt: Date.now() };
+    const db = await getDatabase();
+    const persist = async (stores: { objectStore(name: string): { put(value: unknown): Promise<unknown> } }, career?: import('../types').CareerState) => {
+      await stores.objectStore('vehicles').put(vehicle); await stores.objectStore('vehicle_events').put(event); await stores.objectStore('vehicle_financings').put(contract);
+      if (career) { career.vehiclesCount += 1; await stores.objectStore('career').put(career); }
+    };
+    if (downPayment > 0) {
+      await FinanceService.executeTransaction({ type: 'WITHDRAWAL', category: 'vehicle_purchase', amount: downPayment, description: `Entrada do veículo financiado: ${vehicle.brand} ${vehicle.model}`, idempotencyKey: `vehicle-financing-downpayment:${operationId}`, metadata: { vehicleId: vehicle.id, contractId, purchasePrice: price }, additionalStoreNames: ['vehicles', 'vehicle_events', 'vehicle_financings'], atomicSideEffect: async (tx, _financial, career) => { await persist(tx as unknown as Parameters<typeof persist>[0], career); } });
+    } else {
+      const tx = db.transaction(['vehicles', 'vehicle_events', 'vehicle_financings', 'career'], 'readwrite');
+      const exists = await tx.objectStore('vehicle_financings').get(contractId);
+      if (!exists) { const career = await tx.objectStore('career').get('current_career') ?? { ...INITIAL_CAREER_STATE, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; await persist(tx as unknown as Parameters<typeof persist>[0], career); }
+      await tx.done;
+    }
+    const persistedContract = await db.get('vehicle_financings', contractId);
+    const persistedVehicle = persistedContract ? await this.getVehicleById(persistedContract.vehicleId) : undefined;
+    if (!persistedContract || !persistedVehicle) throw new Error('A compra não foi confirmada no armazenamento local.');
+    return { vehicle: persistedVehicle, contract: persistedContract };
+  }
+
+  static async payVehicleFinancingInstallment(contractId: string, installmentId: string, operationId: string, amount?: number) {
+    const db = await getDatabase();
+    const previousTransaction = await db.get('transactions', operationId);
+    if (previousTransaction) return db.get('vehicle_financings', contractId);
+    const current = await db.get('vehicle_financings', contractId);
+    if (!current || current.status !== 'active') throw new Error('Financiamento ativo não encontrado.');
+    const target = current.installments.find(item => item.id === installmentId);
+    if (!target || target.status === 'paid') throw new Error('Parcela inválida ou já quitada.');
+    const outstanding = Math.round((target.amount - target.paidAmount) * 100) / 100; const paidNow = Math.round((amount ?? outstanding) * 100) / 100;
+    if (paidNow <= 0 || paidNow > outstanding) throw new Error('Valor de pagamento da parcela inválido.');
+    await FinanceService.executeTransaction({ type: 'WITHDRAWAL', category: 'vehicle_purchase', amount: paidNow, description: `Parcela ${target.number} do financiamento — ${current.vehicleName}`, idempotencyKey: operationId, metadata: { contractId, vehicleId: current.vehicleId, installmentId }, additionalStoreNames: ['vehicle_financings'], atomicSideEffect: async tx => {
+      const store = tx.objectStore('vehicle_financings'); const contract = await store.get(contractId); if (!contract || contract.status !== 'active') throw new Error('Financiamento alterado durante o pagamento.');
+      const installment = contract.installments.find(item => item.id === installmentId); if (!installment || installment.status === 'paid' || Math.round((installment.amount - installment.paidAmount) * 100) < Math.round(paidNow * 100)) throw new Error('Parcela alterada durante o pagamento.');
+      installment.paidAmount = Math.round((installment.paidAmount + paidNow) * 100) / 100; installment.status = installment.paidAmount >= installment.amount ? 'paid' : 'pending'; installment.paidAt = installment.status === 'paid' ? new Date().toISOString() : undefined;
+      contract.remainingBalance = Math.max(0, Math.round((contract.remainingBalance - paidNow) * 100) / 100); if (contract.installments.every(item => item.status === 'paid')) contract.status = 'paid'; await store.put(contract);
+    } });
+    return db.get('vehicle_financings', contractId);
+  }
+
+  static async payOffVehicleFinancing(contractId: string, operationId: string) {
+    const db = await getDatabase(); const current = await db.get('vehicle_financings', contractId);
+    if (!current || current.status !== 'active' || current.remainingBalance <= 0) throw new Error('Financiamento ativo não encontrado.');
+    const payoff = Math.round(current.remainingBalance * 100) / 100;
+    await FinanceService.executeTransaction({ type: 'WITHDRAWAL', category: 'vehicle_purchase', amount: payoff, description: `Quitação antecipada — ${current.vehicleName}`, idempotencyKey: operationId, metadata: { contractId, vehicleId: current.vehicleId, payoffAmount: payoff }, additionalStoreNames: ['vehicle_financings'], atomicSideEffect: async tx => {
+      const store = tx.objectStore('vehicle_financings'); const contract = await store.get(contractId);
+      if (!contract || contract.status !== 'active' || Math.round(contract.remainingBalance * 100) < Math.round(payoff * 100)) throw new Error('Saldo de quitação alterado. Atualize e tente novamente.');
+      const at = new Date().toISOString(); for (const installment of contract.installments) { installment.paidAmount = installment.amount; installment.status = 'paid'; installment.paidAt = at; }
+      contract.remainingBalance = 0; contract.status = 'paid'; await store.put(contract);
+    } });
+    return db.get('vehicle_financings', contractId);
+  }
   static async getVehicleRentalContracts(): Promise<VehicleRentalContract[]> {
     const db = await getDatabase();
     return (await db.getAll('vehicle_rental_contracts')).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -263,7 +400,14 @@ export class GarageService {
     ]);
     const due = getNextSaturdayDueDate(referenceDate);
     const dueDay = due.toDateString();
-    const rate = (career.settings?.billSettings?.ipvaRatePercent ?? 25) / 100;
+    // 25% era o padrão fixo anterior e não era editável na interface. Atualizamos
+    // esse padrão legado uma única vez; valores personalizados diferentes são preservados.
+    if (career.settings?.billSettings?.ipvaRatePercent === 25) {
+      career.settings.billSettings.ipvaRatePercent = 10;
+      await db.put('career', career);
+    }
+    const ratePercent = career.settings?.billSettings?.ipvaRatePercent ?? 10;
+    const rate = ratePercent / 100;
     for (const vehicle of vehicles) {
       if (vehicle.isSold) continue;
       if (bills.some((b) => b.category === 'vehicle_tax' && b.relatedAssetId === vehicle.id && new Date(b.dueDate).toDateString() === dueDay)) continue;
@@ -271,7 +415,7 @@ export class GarageService {
       if (amount <= 0) continue;
       const bill = await billService.createBill({
         name: `IPVA - ${vehicle.brand} ${vehicle.model}`,
-        description: `IPVA semanal: ${Math.round(rate * 100)}% do valor de referência do veículo.`,
+        description: `IPVA semanal: ${ratePercent}% do valor de referência do veículo.`,
         category: 'vehicle_tax', amount, dueDate: due.toISOString(), frequency: 'weekly',
         dailyInterestRate: career.settings?.billSettings?.defaultDailyInterestRate ?? 0.10,
         relatedAssetId: vehicle.id, relatedAssetType: 'vehicle',
@@ -427,6 +571,7 @@ export class GarageService {
       throw new Error('Este veículo já foi vendido anteriormente.');
     }
     if (await this.getActiveVehicleRental(vehicleId)) throw new Error('Encerre o contrato de aluguel antes de vender o veículo.');
+    if (await this.getActiveVehicleFinancing(vehicleId)) throw new Error('O veículo possui financiamento pendente. Quite o contrato antes de vender.');
 
     // Creditar dinheiro no banco
     await FinanceService.executeTransaction({
@@ -492,6 +637,7 @@ export class GarageService {
    */
   static async deleteVehicle(id: string): Promise<void> {
     const db = await getDatabase();
+    if (await this.getActiveVehicleFinancing(id)) throw new Error('Quite o financiamento antes de remover o veículo.');
     const rentalHistory = await db.getAllFromIndex('vehicle_rental_contracts', 'by-vehicleId', id);
     if (rentalHistory.length) throw new Error('Veículo com histórico de aluguel não pode ser removido da garagem.');
     await db.delete('vehicles', id);
@@ -525,6 +671,7 @@ export class GarageService {
     const vehicle = await this.getVehicleById(vehicleId);
     if (!vehicle) throw new Error('Veículo não encontrado.');
     if (vehicle.isSold) throw new Error('Não é possível abastecer um veículo já vendido.');
+    if (vehicle.status === 'in_maintenance') throw new Error('Não é possível abastecer um veículo que está na oficina.');
     if (await this.getActiveVehicleRental(vehicleId)) throw new Error('Não é possível abastecer enquanto o veículo está alugado.');
 
     // Validar compatibilidade
@@ -553,9 +700,10 @@ export class GarageService {
     const effectiveLiters = litersCents / 100;
     const totalCost = Math.round(effectiveLiters * pricePerUnit * 100) / 100;
 
-    // Verificar saldo bancário
+    // Verificar saldo somente quando a opção bancária foi escolhida.
+    const paymentMethod = dto.paymentMethod ?? 'bank';
     const career = await FinanceService.getCareerState();
-    if (totalCost > career.currentBalance) {
+    if (paymentMethod === 'bank' && totalCost > career.currentBalance) {
       throw new Error(
         `Saldo insuficiente no banco para abastecer! Custo: R$ ${totalCost.toFixed(
           2
@@ -563,15 +711,7 @@ export class GarageService {
       );
     }
 
-    // Debitar no banco
-    const unitLabel = vehicle.engineType === 'electric' ? 'kWh' : 'L';
-    await FinanceService.executeTransaction({
-      type: 'WITHDRAWAL',
-      category: 'fuel',
-      amount: totalCost,
-      description: `Abastecimento (${effectiveLiters.toFixed(2)}${unitLabel} de ${FUEL_LABELS[fuelType]}): ${vehicle.brand} ${vehicle.model}`,
-      metadata: { vehicleId, fuelType, liters: effectiveLiters, pricePerUnit, stationName },
-    });
+    if (paymentMethod === 'credit_card' && !dto.cardId) throw new Error('Selecione um cartão de crédito.');
 
     const newFuel = Math.min(
       vehicle.tankCapacity,
@@ -580,6 +720,7 @@ export class GarageService {
 
     const nowIso = new Date().toISOString();
     const isEthanol = fuelType === 'ethanol';
+    const unitLabel = vehicle.engineType === 'electric' ? 'kWh' : 'L';
 
     const updatedVehicle: Vehicle = {
       ...vehicle,
@@ -588,10 +729,7 @@ export class GarageService {
       updatedAt: nowIso,
     };
 
-    const db = await getDatabase();
-    await db.put('vehicles', updatedVehicle);
-
-    const event = await this.recordVehicleEvent({
+    const eventData = {
       vehicleId,
       type: 'refuel',
       description: `Abastecido com ${effectiveLiters.toFixed(2)}${unitLabel} de ${FUEL_LABELS[fuelType]} a R$ ${pricePerUnit.toFixed(2)}/${unitLabel}`,
@@ -604,9 +742,31 @@ export class GarageService {
         stationName: stationName || 'Posto Horizon',
         notes,
       },
-    });
+    } as const;
 
-    return { vehicle: updatedVehicle, event };
+    const operationId = dto.idempotencyKey ?? `refuel:${crypto.randomUUID()}`;
+    const event: VehicleEvent = { id: `ve_${operationId}`, vehicleId, type: 'refuel', description: eventData.description, cost: totalCost, details: eventData.details, timestamp: nowIso, createdAt: Date.now() };
+    if (paymentMethod === 'credit_card') {
+      await CreditCardService.registerPurchase({
+        cardId: dto.cardId!, description: `Combustível (${effectiveLiters.toFixed(2)} ${unitLabel} de ${FUEL_LABELS[fuelType]}) — ${vehicle.brand} ${vehicle.model}`,
+        category: 'Combustível', amount: totalCost, purchasedAt: nowIso,
+        idempotencyKey: operationId,
+        atomicSideEffect: async ({ put }) => { await put('vehicles', updatedVehicle); await put('vehicle_events', event); },
+      });
+      // Em chamadas repetidas, a operação idempotente já confirmou o conjunto completo.
+    } else {
+      await FinanceService.executeTransaction({
+        type: 'WITHDRAWAL', category: 'fuel', amount: totalCost,
+        description: `Abastecimento (${effectiveLiters.toFixed(2)}${unitLabel} de ${FUEL_LABELS[fuelType]}): ${vehicle.brand} ${vehicle.model}`,
+        metadata: { vehicleId, fuelType, liters: effectiveLiters, pricePerUnit, stationName }, idempotencyKey: operationId,
+        additionalStoreNames: ['vehicles', 'vehicle_events'],
+        atomicSideEffect: async tx => {
+          await tx.objectStore('vehicles').put(updatedVehicle); await tx.objectStore('vehicle_events').put(event);
+        },
+      });
+    }
+    const db = await getDatabase();
+    return { vehicle: await db.get('vehicles', vehicleId) ?? updatedVehicle, event: await db.get('vehicle_events', event.id) ?? event };
   }
 
   /**
@@ -826,6 +986,7 @@ export class GarageService {
     const vehicle = await this.getVehicleById(vehicleId);
     if (!vehicle) throw new Error('Veículo não encontrado.');
     if (vehicle.isSold) throw new Error('Não é possível reparar um veículo vendido.');
+    if (vehicle.status === 'in_maintenance') throw new Error('O veículo já está em manutenção.');
     if (await this.getActiveVehicleRental(vehicleId)) throw new Error('Encerre o contrato de aluguel antes de enviar o veículo à oficina.');
 
     const { breakdown, totalCost, totalDurationMinutes } = this.calculateRepairCosts(
@@ -837,9 +998,9 @@ export class GarageService {
       throw new Error('Nenhum componente selecionado possui desgaste para reparar.');
     }
 
-    // Verificar saldo bancário
+    const paymentMethod = dto.paymentMethod ?? 'bank';
     const career = await FinanceService.getCareerState();
-    if (totalCost > career.currentBalance) {
+    if (paymentMethod === 'bank' && totalCost > career.currentBalance) {
       throw new Error(
         `Saldo insuficiente para realizar os reparos! Custo: R$ ${totalCost.toFixed(
           2
@@ -847,15 +1008,8 @@ export class GarageService {
       );
     }
 
-    // Debitar no banco
     const componentNames = selectedComponents.join(', ');
-    await FinanceService.executeTransaction({
-      type: 'WITHDRAWAL',
-      category: 'maintenance',
-      amount: totalCost,
-      description: `Reparo mecânico (${componentNames}): ${vehicle.brand} ${vehicle.model}`,
-      metadata: { vehicleId, components: selectedComponents, totalCost },
-    });
+    if (paymentMethod === 'credit_card' && !dto.cardId) throw new Error('Selecione um cartão de crédito.');
 
     // Zera desgaste dos componentes reparados
     const newWear: ComponentWear = { ...vehicle.wear };
@@ -876,10 +1030,7 @@ export class GarageService {
       updatedAt: nowIso,
     };
 
-    const db = await getDatabase();
-    await db.put('vehicles', updatedVehicle);
-
-    const event = await this.recordVehicleEvent({
+    const eventData = {
       vehicleId,
       type: 'maintenance',
       description: `Reparo de componentes (${componentNames}) por R$ ${totalCost.toFixed(2)}`,
@@ -890,9 +1041,24 @@ export class GarageService {
         durationMinutes,
         instantRepair,
       },
-    });
+    } as const;
 
-    return { vehicle: updatedVehicle, event };
+    const operationId = dto.idempotencyKey ?? `repair:${crypto.randomUUID()}`;
+    const event: VehicleEvent = { id: `ve_${operationId}`, vehicleId, type: 'maintenance', description: eventData.description, cost: totalCost, details: eventData.details, timestamp: nowIso, createdAt: Date.now() };
+    if (paymentMethod === 'credit_card') {
+      await CreditCardService.registerPurchase({
+        cardId: dto.cardId!, description: `Manutenção automotiva (${componentNames}) — ${vehicle.brand} ${vehicle.model}`,
+        category: 'Manutenção automotiva', amount: totalCost, purchasedAt: nowIso,
+        idempotencyKey: operationId,
+        atomicSideEffect: async ({ put }) => { await put('vehicles', updatedVehicle); await put('vehicle_events', event); },
+      });
+    } else {
+      await FinanceService.executeTransaction({ type: 'WITHDRAWAL', category: 'maintenance', amount: totalCost, description: `Reparo mecânico (${componentNames}): ${vehicle.brand} ${vehicle.model}`, metadata: { vehicleId, components: selectedComponents, totalCost }, idempotencyKey: operationId, additionalStoreNames: ['vehicles', 'vehicle_events'], atomicSideEffect: async tx => {
+        await tx.objectStore('vehicles').put(updatedVehicle); await tx.objectStore('vehicle_events').put(event);
+      } });
+    }
+    const db = await getDatabase();
+    return { vehicle: await db.get('vehicles', vehicleId) ?? updatedVehicle, event: await db.get('vehicle_events', event.id) ?? event };
   }
 
   /**

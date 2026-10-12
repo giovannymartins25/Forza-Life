@@ -52,7 +52,7 @@ describe('garage fuel, component wear and vehicle tax corrections', () => {
     const db = await getDatabase();
     const bills = (await db.getAll('bills')).filter((bill) => bill.category === 'vehicle_tax' && bill.relatedAssetId === vehicle.id);
     expect(bills).toHaveLength(1);
-    expect(bills[0].originalAmountCents).toBe(2500000);
+    expect(bills[0].originalAmountCents).toBe(1000000);
     expect(bills[0].frequency).toBe('weekly');
   });
 });

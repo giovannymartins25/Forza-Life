@@ -5,7 +5,7 @@ import { DB_NAME, DB_VERSION, getDatabase, resetDBConnection } from '../services
 
 let migratedDb: IDBPDatabase<import('../services/db').HorizonLifeDBSchema> | null = null;
 
-describe('IndexedDB migration v8 to v9 for credit cards', () => {
+describe('IndexedDB migrations for cards and vehicle financing', () => {
   beforeEach(async () => {
     resetDBConnection();
     await deleteDB(DB_NAME);
@@ -22,12 +22,21 @@ describe('IndexedDB migration v8 to v9 for credit cards', () => {
 
   it('adds only the new stores and keeps preexisting player records intact', async () => {
     const db = migratedDb = await getDatabase();
-    expect(DB_VERSION).toBe(9);
+    expect(DB_VERSION).toBe(11);
     expect((await db.get('career', 'current_career'))?.pilotName).toBe('Save legado');
     expect(await db.get('transactions', 'legacy-entry')).toMatchObject({ amount: 7 });
-    for (const store of ['credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history'] as const) {
+    for (const store of ['credit_cards', 'credit_card_purchases', 'credit_card_invoices', 'credit_card_payments', 'credit_limit_history', 'vehicle_financings'] as const) {
       expect(db.objectStoreNames.contains(store)).toBe(true);
       expect(await db.count(store)).toBe(0);
     }
+  });
+
+  it('seeds one basic card only on a brand-new database, not in an existing save', async () => {
+    resetDBConnection(); await deleteDB(DB_NAME);
+    const fresh = migratedDb = await getDatabase();
+    const cards = await fresh.getAll('credit_cards');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ id: 'card_starter_basic', limit: 1000, category: 'basic' });
+    expect(await fresh.count('vehicle_financings')).toBe(0);
   });
 });

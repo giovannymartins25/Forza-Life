@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal } from '../common/Modal';
 import { useCareer } from '../../context/CareerContext';
 import { formatBRL } from '../../utils/currency';
 import { GarageService, DEFAULT_WEAR } from '../../services/garageService';
 import type { ComponentWear, Vehicle } from '../../types';
 import { Wrench, Clock, AlertTriangle } from 'lucide-react';
+import { CreditCardService } from '../../services/creditCardService';
+import type { CreditCard as Card } from '../../types';
 
 interface MaintenanceModalProps {
   vehicle: Vehicle | null;
@@ -34,10 +36,18 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
   onClose,
 }) => {
   const { career, executeRepair } = useCareer();
+  const [cards, setCards] = useState<Card[]>([]);
+  const [availableLimits, setAvailableLimits] = useState<Record<string, number>>({});
+  const [paymentMethod, setPaymentMethod] = useState<'bank' | 'credit_card'>('bank');
+  const [cardId, setCardId] = useState('');
+  const [operationKey, setOperationKey] = useState(() => crypto.randomUUID());
   const [selected, setSelected] = useState<(keyof ComponentWear)[]>([]);
   const [instantRepair, setInstantRepair] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { if (isOpen) void CreditCardService.getCards().then(async loaded => { setCards(loaded); const limits = await Promise.all(loaded.map(async card => [card.id, await CreditCardService.getAvailableLimit(card)] as const)); setAvailableLimits(Object.fromEntries(limits)); }).catch(() => { setCards([]); setAvailableLimits({}); }); }, [isOpen]);
+  useEffect(() => { if (vehicle && isOpen) { setPaymentMethod('bank'); setCardId(''); setOperationKey(crypto.randomUUID()); } }, [vehicle?.id, isOpen]);
 
   if (!vehicle) return null;
 
@@ -60,6 +70,7 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
     vehicle,
     selected
   );
+  const selectedCardLimit = availableLimits[cardId] ?? 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,7 +81,7 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
       return;
     }
 
-    if (totalCost > currentBalance) {
+    if (paymentMethod === 'bank' && totalCost > currentBalance) {
       setError(
         `Saldo bancário insuficiente! Custo total do reparo: ${formatBRL(
           totalCost
@@ -85,6 +96,9 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
         vehicleId: vehicle.id,
         selectedComponents: selected,
         instantRepair,
+        paymentMethod,
+        cardId: paymentMethod === 'credit_card' ? cardId : undefined,
+        idempotencyKey: operationKey,
       });
       onClose();
     } catch (err: unknown) {
@@ -122,6 +136,9 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
           <span className="text-slate-400">Saldo Disponível no Banco:</span>
           <span className="font-mono font-bold text-emerald-400">{formatBRL(currentBalance)}</span>
         </div>
+        <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPaymentMethod('bank')} className={`rounded-xl border p-2.5 text-xs font-semibold ${paymentMethod === 'bank' ? 'border-amber-500 bg-amber-500/10 text-amber-300' : 'border-slate-800 text-slate-400'}`}>Débito bancário</button><button type="button" onClick={() => setPaymentMethod('credit_card')} className={`rounded-xl border p-2.5 text-xs font-semibold ${paymentMethod === 'credit_card' ? 'border-amber-500 bg-amber-500/10 text-amber-300' : 'border-slate-800 text-slate-400'}`}>Cartão de crédito</button></div>
+        {paymentMethod === 'credit_card' && <label className="block"><span className="mb-1 block text-xs text-slate-400">Cartão ativo</span><select required value={cardId} onChange={e => setCardId(e.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white"><option value="">Selecione um cartão</option>{cards.filter(card => card.status === 'active').map(card => <option key={card.id} value={card.id}>{card.name} · disponível {formatBRL(availableLimits[card.id] ?? card.limit)}</option>)}</select><span className="mt-1 block text-[10px] text-slate-500">A despesa será incluída na fatura. O saldo bancário só muda ao pagar a fatura.</span></label>}
+        {paymentMethod === 'credit_card' && cardId && totalCost > selectedCardLimit && <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">Limite insuficiente. Disponível: {formatBRL(selectedCardLimit)} · necessário: {formatBRL(totalCost)}.</p>}
 
         {/* Component selection list */}
         <div className="space-y-2">
@@ -222,7 +239,7 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
         <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center justify-between">
           <div>
             <span className="text-xs font-semibold text-amber-300 uppercase block">
-              Custo Total a Debitar
+              {paymentMethod === 'bank' ? 'Custo total a debitar' : 'Custo total na fatura'}
             </span>
             <span className="text-[11px] text-slate-400">
               {selected.length} componente(s) selecionado(s)
@@ -251,7 +268,7 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
           </button>
           <button
             type="submit"
-            disabled={isSubmitting || selected.length === 0 || totalCost > currentBalance}
+            disabled={isSubmitting || selected.length === 0 || totalCost <= 0 || (paymentMethod === 'bank' && totalCost > currentBalance) || (paymentMethod === 'credit_card' && (!cardId || totalCost > selectedCardLimit))}
             className="flex items-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-rose-600/20 cursor-pointer disabled:opacity-50"
           >
             <Wrench className="w-4 h-4" />

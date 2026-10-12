@@ -840,7 +840,15 @@ export class PropertyService {
     const activeProperties = properties.filter((p) => !p.isSold && p.status !== 'sold');
 
     for (const prop of activeProperties) {
-      const iptuAmount = Math.round(prop.referenceValue * 0.25 * 100) / 100;
+      const career = await FinanceService.getCareerState();
+      // Atualizar apenas o valor das novas obrigações; contas já criadas preservam o histórico.
+      if (career.settings?.billSettings?.iptuRatePercent === 25) {
+        career.settings.billSettings.iptuRatePercent = 10;
+        await db.put('career', career);
+      }
+      const iptuRate = career.settings?.billSettings?.iptuRatePercent ?? 10;
+      const currentValue = prop.manualEstimatedValue ?? prop.estimatedMarketValue ?? prop.referenceValue;
+      const iptuAmount = Math.round(currentValue * (iptuRate / 100) * 100) / 100;
       if (iptuAmount <= 0) continue;
 
       const saturdayDue = getNextSaturdayDueDate(referenceDate);
@@ -857,7 +865,7 @@ export class PropertyService {
       if (!alreadyHasBillForPeriod) {
         const newBill = await billService.createBill({
           name: `IPTU - ${prop.name}`,
-          description: `IPTU semanal referente ao imóvel ${prop.name} (25% do valor de referência: R$ ${prop.referenceValue.toFixed(2)})`,
+          description: `IPTU semanal referente ao imóvel ${prop.name} (${iptuRate}% do valor atual: R$ ${currentValue.toFixed(2)})`,
           category: 'property_tax',
           amount: iptuAmount,
           dueDate: saturdayIso,

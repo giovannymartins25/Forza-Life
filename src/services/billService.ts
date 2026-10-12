@@ -1,5 +1,6 @@
 import { getDatabase } from './db';
 import { financeService } from './financeService';
+import { CreditCardService } from './creditCardService';
 import type {
   Bill,
   BillCategory,
@@ -291,6 +292,34 @@ class BillService {
 
     await db.put('bills', updatedBill);
     return { bill: updatedBill, transactionId: tx.id };
+  }
+
+  /** Converts a tax obligation into card installments atomically; the bank balance is untouched. */
+  async payBillWithCreditCard(id: string, cardId: string, installmentCount: number, operationId: string) {
+    const db = await getDatabase(); const bill = await db.get('bills', id);
+    if (!bill) throw new Error('Conta não encontrada.');
+    if (bill.category !== 'vehicle_tax' && bill.category !== 'property_tax') throw new Error('Parcelamento no cartão está disponível apenas para IPVA e IPTU.');
+    if (!Number.isInteger(installmentCount) || installmentCount < 1 || installmentCount > 12 || !operationId) throw new Error('Selecione de 1 a 12 parcelas.');
+    const purchaseKey = `tax-bill:${bill.id}:${operationId}`;
+    const previousPurchase = await db.get('credit_card_purchases', `purchase:${purchaseKey}`);
+    if (previousPurchase && bill.status === 'paid') return { bill, purchase: previousPurchase };
+    if (bill.status === 'paid') throw new Error('Esta conta já foi paga.');
+    const now = new Date(); const computed = getBillComputedValues(bill, now);
+    const paymentId = `credit-card-tax:${purchaseKey}`;
+    const updatedBill: Bill = { ...bill, status: 'paid', accruedInterestCents: computed.accruedInterestCents, payments: [...(bill.payments || []), { id: paymentId, paidAt: now.toISOString(), amountPaid: computed.totalAmount, originalAmount: computed.originalAmount, interestPaid: computed.accruedInterest, paymentMethod: 'credit_card' as const, creditCardPurchaseId: `purchase:${purchaseKey}` }], lastInterestCalculatedAt: now.toISOString() };
+    const purchase = await CreditCardService.registerPurchase({
+      cardId, description: `${bill.category === 'vehicle_tax' ? 'IPVA' : 'IPTU'} parcelado — ${bill.name}`,
+      category: bill.category === 'vehicle_tax' ? 'IPVA' : 'IPTU', amount: computed.totalAmount,
+      installmentCount, purchasedAt: now.toISOString(), idempotencyKey: purchaseKey,
+      consecutiveDailyInvoices: true, atomicStoreNames: ['bills'],
+      atomicSideEffect: async ({ get, put }) => {
+        const current = await get('bills', id) as Bill | undefined;
+        if (!current || current.status === 'paid') throw new Error('A obrigação foi alterada antes da confirmação. Atualize a tela.');
+        if (current.originalAmountCents !== bill.originalAmountCents || current.dueDate !== bill.dueDate || current.accruedInterestCents !== bill.accruedInterestCents) throw new Error('Os juros ou o vencimento da obrigação mudaram durante a confirmação. Revise o valor antes de tentar novamente.');
+        await put('bills', updatedBill);
+      },
+    });
+    return { bill: updatedBill, purchase };
   }
 
   /**

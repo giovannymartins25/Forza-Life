@@ -26,15 +26,16 @@ import type {
   CreditCardInvoice,
   CreditCardPayment,
   CreditLimitHistoryEntry,
+  VehicleFinancingContract,
 } from '../types';
 
 export const DB_NAME = 'horizon_life_db';
-export const DB_VERSION = 9;
+export const DB_VERSION = 11;
 
 export const DEFAULT_BILL_SETTINGS = {
   defaultDailyInterestRate: 0.10,
-  ipvaRatePercent: 25,
-  iptuRatePercent: 25,
+  ipvaRatePercent: 10,
+  iptuRatePercent: 10,
   ipvaFrequency: 'weekly' as const,
   iptuFrequency: 'weekly' as const,
 };
@@ -245,6 +246,7 @@ export interface HorizonLifeDBSchema extends DBSchema {
   credit_card_invoices: { key: string; value: CreditCardInvoice; indexes: { 'by-cardId': string; 'by-dueDate': string } };
   credit_card_payments: { key: string; value: CreditCardPayment; indexes: { 'by-invoiceId': string; 'by-cardId': string } };
   credit_limit_history: { key: string; value: CreditLimitHistoryEntry; indexes: { 'by-cardId': string; 'by-changedAt': string } };
+  vehicle_financings: { key: string; value: VehicleFinancingContract; indexes: { 'by-vehicleId': string; 'by-status': string } };
 }
 
 let dbPromise: Promise<IDBPDatabase<HorizonLifeDBSchema>> | null = null;
@@ -252,7 +254,7 @@ let dbPromise: Promise<IDBPDatabase<HorizonLifeDBSchema>> | null = null;
 export function getDatabase(): Promise<IDBPDatabase<HorizonLifeDBSchema>> {
   if (!dbPromise) {
     dbPromise = openDB<HorizonLifeDBSchema>(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion) {
+      upgrade(db, oldVersion, _newVersion, upgradeTx) {
         // v1: Criação de tabelas base da Fase 1
         if (oldVersion < 1) {
           if (!db.objectStoreNames.contains('career')) {
@@ -429,6 +431,23 @@ export function getDatabase(): Promise<IDBPDatabase<HorizonLifeDBSchema>> {
             history.createIndex('by-cardId', 'cardId');
             history.createIndex('by-changedAt', 'changedAt');
           }
+        }
+        // v10: cartão básico inicial apenas em uma instalação genuinamente nova.
+        // Saves já existentes (inclusive sem cartões) não recebem alterações automáticas.
+        if (oldVersion === 0) {
+          const initialCard: CreditCard = {
+            id: 'card_starter_basic', name: 'Horizon Básico', issuer: 'Banco Horizon', brand: 'Horizon',
+            category: 'basic', limit: 1000, interestRatePercent: 8.5, annualFee: 120, otherFee: 0,
+            lateFeePercent: 2, dailyLateInterestPercent: 0.1, closingDay: 10, dueDay: 20,
+            status: 'active', createdAt: new Date().toISOString(),
+            limitGrowth: { enabled: true, increment: 250, maxLimit: 5000, minOnTimePayments: 3, minAccountAgeDays: 30, maxUtilizationPercent: 80, requireNoLatePayments: true, categoryThresholds: { basic: 0, gold: 5000, platinum: 15000, black: 30000 } },
+          };
+          upgradeTx.objectStore('credit_cards').add(initialCard);
+        }
+        if (oldVersion < 11 && !db.objectStoreNames.contains('vehicle_financings')) {
+          const financings = db.createObjectStore('vehicle_financings', { keyPath: 'id' });
+          financings.createIndex('by-vehicleId', 'vehicleId');
+          financings.createIndex('by-status', 'status');
         }
       },
     }).then((db) => {

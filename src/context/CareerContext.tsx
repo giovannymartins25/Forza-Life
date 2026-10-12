@@ -37,6 +37,7 @@ import {
   type RefuelDTO,
   type RepairDTO,
   type CreateVehicleRentalDTO,
+  type FinanceVehicleDTO,
 } from '../services/garageService';
 import {
   RideshareService,
@@ -99,6 +100,7 @@ interface CareerContextType {
   payBill: (id: string) => Promise<{ bill: Bill; transactionId: string }>;
   deleteBill: (id: string) => Promise<void>;
   buyVehicle: (dto: CreateVehicleDTO) => Promise<Vehicle>;
+  buyVehicleFinanced: (dto: FinanceVehicleDTO) => Promise<Vehicle>;
   registerInitialVehicle: (dto: CreateVehicleDTO) => Promise<Vehicle>;
   sellVehicle: (vehicleId: string, salePrice: number) => Promise<Vehicle>;
   refuelVehicle: (dto: RefuelDTO) => Promise<Vehicle>;
@@ -242,6 +244,7 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } catch (ipvaErr) {
         console.error('Falha ao gerar IPVA automático:', ipvaErr);
       }
+      try { await GarageService.processVehicleFinancings(); } catch (financingErr) { console.error('Falha ao processar vencimentos de financiamentos:', financingErr); }
       try {
         await CreditCardService.processConfiguredFees();
       } catch (cardFeeErr) {
@@ -544,6 +547,14 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     },
     [addToast, refreshData]
   );
+
+  const buyVehicleFinanced = useCallback(async (dto: FinanceVehicleDTO): Promise<Vehicle> => {
+    try {
+      const { vehicle, contract } = await GarageService.buyVehicleFinanced(dto);
+      addToast(`Veículo adquirido com financiamento. ${contract.installments.length} parcelas registradas.`, 'success');
+      await refreshData(); return vehicle;
+    } catch (err: unknown) { const msg = err instanceof Error ? err.message : 'Falha ao financiar veículo.'; addToast(msg, 'error'); throw err; }
+  }, [addToast, refreshData]);
 
   const registerInitialVehicle = useCallback(
     async (dto: CreateVehicleDTO): Promise<Vehicle> => {
@@ -1339,6 +1350,7 @@ export const CareerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         payBill,
         deleteBill,
         buyVehicle,
+        buyVehicleFinanced,
         registerInitialVehicle,
         sellVehicle,
         refuelVehicle,

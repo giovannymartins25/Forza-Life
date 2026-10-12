@@ -297,7 +297,7 @@ describe('Horizon Life — Módulo de Imóveis, Propriedades e Aluguéis (Fase I
       );
 
       expect(iptuBill).toBeDefined();
-      expect(iptuBill?.originalAmountCents).toBe(50000 * 100); // 25% de 200.000 = 50.000
+      expect(iptuBill?.originalAmountCents).toBe(20000 * 100); // 10% de 200.000 = 20.000
       expect(iptuBill?.frequency).toBe('weekly');
       expect(iptuBill?.status).toBe('pending');
 
@@ -309,7 +309,7 @@ describe('Horizon Life — Módulo de Imóveis, Propriedades e Aluguéis (Fase I
       await billService.payBill(iptuBill!.id);
 
       const careerAfterPay = await FinanceService.getCareerState();
-      expect(careerAfterPay.currentBalance).toBe(50000);
+      expect(careerAfterPay.currentBalance).toBe(80000);
 
       const paidBill = await billService.getBillById(iptuBill!.id);
       expect(paidBill?.status).toBe('paid');

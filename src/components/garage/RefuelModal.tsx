@@ -5,6 +5,8 @@ import { formatBRL } from '../../utils/currency';
 import { FUEL_LABELS, DEFAULT_FUEL_PRICES } from '../../services/garageService';
 import type { FuelType, Vehicle } from '../../types';
 import { AlertCircle } from 'lucide-react';
+import { CreditCardService } from '../../services/creditCardService';
+import type { CreditCard } from '../../types';
 
 interface RefuelModalProps {
   vehicle: Vehicle | null;
@@ -14,6 +16,11 @@ interface RefuelModalProps {
 
 export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClose }) => {
   const { career, refuelVehicle } = useCareer();
+  const [cards, setCards] = useState<CreditCard[]>([]);
+  const [availableLimits, setAvailableLimits] = useState<Record<string, number>>({});
+  const [paymentMethod, setPaymentMethod] = useState<'bank' | 'credit_card'>('bank');
+  const [cardId, setCardId] = useState('');
+  const [operationKey, setOperationKey] = useState(() => crypto.randomUUID());
 
   const [fuelType, setFuelType] = useState<FuelType>('gasoline_regular');
   const [pricePerUnit, setPricePerUnit] = useState<string>('5.89');
@@ -32,8 +39,11 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
       setPricePerUnit(defaultPrice.toFixed(2));
       setLitersStr('');
       setError(null);
+      setPaymentMethod('bank'); setCardId(''); setOperationKey(crypto.randomUUID());
     }
   }, [vehicle]);
+
+  useEffect(() => { if (isOpen) void CreditCardService.getCards().then(async loaded => { setCards(loaded); const limits = await Promise.all(loaded.map(async card => [card.id, await CreditCardService.getAvailableLimit(card)] as const)); setAvailableLimits(Object.fromEntries(limits)); }).catch(() => { setCards([]); setAvailableLimits({}); }); }, [isOpen]);
 
   if (!vehicle) return null;
 
@@ -47,6 +57,7 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
   const parsedPrice = parseFloat(pricePerUnit.replace(',', '.')) || 0;
   const parsedLiters = parseFloat(litersStr.replace(',', '.')) || 0;
   const calculatedCost = Math.round(parsedLiters * parsedPrice * 100) / 100;
+  const selectedCardLimit = availableLimits[cardId] ?? 0;
   const currentBalance = career?.currentBalance || 0;
 
   const handleFillMax = () => {
@@ -72,7 +83,7 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
       return;
     }
 
-    if (calculatedCost > currentBalance) {
+    if (paymentMethod === 'bank' && calculatedCost > currentBalance) {
       setError(`Saldo insuficiente no banco! Custo: ${formatBRL(calculatedCost)}, Saldo: ${formatBRL(currentBalance)}.`);
       return;
     }
@@ -86,6 +97,9 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
         pricePerUnit: parsedPrice,
         stationName: stationName.trim() || undefined,
         notes: notes.trim() || undefined,
+        paymentMethod,
+        cardId: paymentMethod === 'credit_card' ? cardId : undefined,
+        idempotencyKey: operationKey,
       });
       onClose();
     } catch (err: unknown) {
@@ -125,6 +139,12 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
             </span>
           </div>
         </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => setPaymentMethod('bank')} className={`rounded-xl border p-2.5 text-xs font-semibold ${paymentMethod === 'bank' ? 'border-amber-500 bg-amber-500/10 text-amber-300' : 'border-slate-800 text-slate-400'}`}>Débito bancário</button>
+          <button type="button" onClick={() => setPaymentMethod('credit_card')} className={`rounded-xl border p-2.5 text-xs font-semibold ${paymentMethod === 'credit_card' ? 'border-amber-500 bg-amber-500/10 text-amber-300' : 'border-slate-800 text-slate-400'}`}>Cartão de crédito</button>
+        </div>
+        {paymentMethod === 'credit_card' && <label className="block"><span className="mb-1 block text-xs text-slate-400">Cartão ativo</span><select required value={cardId} onChange={e => setCardId(e.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white"><option value="">Selecione um cartão</option>{cards.filter(card => card.status === 'active').map(card => <option key={card.id} value={card.id}>{card.name} · disponível {formatBRL(availableLimits[card.id] ?? card.limit)}</option>)}</select><span className="mt-1 block text-[10px] text-slate-500">A compra compromete o limite e entra na fatura; o saldo bancário não será debitado agora.</span></label>}
 
         {/* Seleção do combustível compatível */}
         <div>
@@ -223,11 +243,12 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
 
         {/* Total Cost Preview */}
         <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between text-xs">
-          <span className="text-amber-300 font-semibold">Valor Total a Debitar:</span>
+          <span className="text-amber-300 font-semibold">{paymentMethod === 'bank' ? 'Valor a debitar:' : 'Valor no cartão:'}</span>
           <span className="font-mono text-base font-black text-amber-400">
             {formatBRL(calculatedCost)}
           </span>
         </div>
+        {paymentMethod === 'credit_card' && cardId && calculatedCost > selectedCardLimit && <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">Limite insuficiente. Disponível: {formatBRL(selectedCardLimit)} · necessário: {formatBRL(calculatedCost)}.</p>}
 
         {error && (
           <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs rounded-xl flex items-center gap-2">
@@ -247,7 +268,7 @@ export const RefuelModal: React.FC<RefuelModalProps> = ({ vehicle, isOpen, onClo
           </button>
           <button
             type="submit"
-            disabled={isSubmitting || parsedLiters <= 0 || calculatedCost > currentBalance}
+            disabled={isSubmitting || parsedLiters <= 0 || (paymentMethod === 'bank' && calculatedCost > currentBalance) || (paymentMethod === 'credit_card' && (!cardId || calculatedCost > selectedCardLimit))}
             className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm rounded-xl shadow-lg shadow-amber-500/20 cursor-pointer disabled:opacity-50"
           >
             {isSubmitting ? 'Abastecendo...' : 'Confirmar Abastecimento'}

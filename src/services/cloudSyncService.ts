@@ -119,6 +119,7 @@ export class CloudSyncService {
       creditCardInvoices: save.data.creditCardInvoices ?? [],
       creditCardPayments: save.data.creditCardPayments ?? [],
       creditLimitHistory: save.data.creditLimitHistory ?? [],
+      vehicleFinancingContracts: save.data.vehicleFinancingContracts ?? [],
     }));
     const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -154,6 +155,7 @@ export function snapshotsEqual(a: BackupData, b: BackupData): boolean {
     creditCardInvoices: save.data.creditCardInvoices ?? [],
     creditCardPayments: save.data.creditCardPayments ?? [],
     creditLimitHistory: save.data.creditLimitHistory ?? [],
+    vehicleFinancingContracts: save.data.vehicleFinancingContracts ?? [],
   });
   return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
 }

@@ -2,9 +2,9 @@ import React, { useState, useRef } from 'react';
 import { Modal } from '../common/Modal';
 import { useCareer } from '../../context/CareerContext';
 import { formatBRL } from '../../utils/currency';
-import { type CreateVehicleDTO } from '../../services/garageService';
+import { GarageService, type CreateVehicleDTO } from '../../services/garageService';
 import type { EngineType, FuelType } from '../../types';
-import { ShoppingCart, Gift, AlertCircle, Image, Upload, X } from 'lucide-react';
+import { ShoppingCart, Gift, AlertCircle, Image, Upload, X, Landmark } from 'lucide-react';
 
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -21,15 +21,22 @@ interface NewVehicleModalProps {
 }
 
 export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClose }) => {
-  const { career, buyVehicle, registerInitialVehicle } = useCareer();
+  const { career, buyVehicle, buyVehicleFinanced, registerInitialVehicle } = useCareer();
 
-  const [mode, setMode] = useState<'buy' | 'free'>('buy');
+  const [mode, setMode] = useState<'buy' | 'finance' | 'free'>('buy');
   const [brand, setBrand] = useState('');
   const [model, setModel] = useState('');
   const [year, setYear] = useState(2024);
   const [nickname, setNickname] = useState('');
   const [marketValue, setMarketValue] = useState('120000');
   const [purchasePrice, setPurchasePrice] = useState('120000');
+  const [downPayment, setDownPayment] = useState('20000');
+  const [installmentCount, setInstallmentCount] = useState('30');
+  const [financeRate, setFinanceRate] = useState('1.5');
+  const [financeMethod, setFinanceMethod] = useState<'flat' | 'compound'>('flat');
+  const [financeFees, setFinanceFees] = useState('0');
+  const [financeStart, setFinanceStart] = useState(new Date().toISOString().slice(0, 10));
+  const [financeFirstDue, setFinanceFirstDue] = useState(new Date(Date.now() + 86400000).toISOString().slice(0, 10));
   const [mileageKm, setMileageKm] = useState('0');
   const [engineType, setEngineType] = useState<EngineType>('combustion');
   const [fuelType, setFuelType] = useState<FuelType>('gasoline_regular');
@@ -129,20 +136,25 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
 
     try {
       setIsSubmitting(true);
-      if (mode === 'buy') {
+      if (mode === 'buy' || mode === 'finance') {
         const parsedPrice = parseFloat(purchasePrice.replace(',', '.'));
         if (isNaN(parsedPrice) || parsedPrice <= 0) {
           setError('Informe o preço de compra efetivo.');
           setIsSubmitting(false);
           return;
         }
-        if (parsedPrice > currentBalance) {
+        if (mode === 'buy' && parsedPrice > currentBalance) {
           setError(`Saldo insuficiente para compra! Preço: ${formatBRL(parsedPrice)}, Saldo: ${formatBRL(currentBalance)}.`);
           setIsSubmitting(false);
           return;
         }
         dto.purchasePrice = parsedPrice;
-        await buyVehicle(dto);
+        if (mode === 'finance') {
+          const entry = Number(downPayment); const count = Number(installmentCount); const rate = Number(financeRate); const fees = Number(financeFees);
+          GarageService.calculateVehicleFinancing(parsedPrice, entry, count, rate, financeMethod, fees);
+          if (entry > currentBalance) throw new Error(`Saldo insuficiente para a entrada de ${formatBRL(entry)}.`);
+          await buyVehicleFinanced({ ...dto, downPayment: entry, installmentCount: count, interestRatePercent: rate, interestMethod: financeMethod, fees, startDate: new Date(`${financeStart}T12:00:00`).toISOString(), firstDueDate: new Date(`${financeFirstDue}T12:00:00`).toISOString(), operationId: crypto.randomUUID() });
+        } else await buyVehicle(dto);
       } else {
         await registerInitialVehicle(dto);
       }
@@ -165,7 +177,7 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
     >
       <form onSubmit={handleSubmit} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
         {/* Toggle Mode: Compra Financeira vs Cadastro Inicial Gratuito */}
-        <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950 rounded-2xl border border-slate-800">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-1 bg-slate-950 rounded-2xl border border-slate-800">
           <button
             type="button"
             onClick={() => setMode('buy')}
@@ -178,6 +190,7 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
             <ShoppingCart className="w-4 h-4" />
             <span>Comprar (Débito em Conta)</span>
           </button>
+          <button type="button" onClick={() => setMode('finance')} className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${mode === 'finance' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'}`}><Landmark className="w-4 h-4" /><span>Financiar</span></button>
           <button
             type="button"
             onClick={() => setMode('free')}
@@ -192,7 +205,7 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
           </button>
         </div>
 
-        {mode === 'buy' && (
+        {(mode === 'buy' || mode === 'finance') && (
           <div className="flex justify-between items-center p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-xs">
             <span className="text-slate-400">Saldo Disponível no Banco:</span>
             <span className="font-mono font-bold text-emerald-400">{formatBRL(currentBalance)}</span>
@@ -275,7 +288,7 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
             <p className="text-[10px] text-slate-500 mt-1">Usado como base para cálculo de reparos mecânicos.</p>
           </div>
 
-          {mode === 'buy' ? (
+          {mode !== 'free' ? (
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                 Preço Efetivo Pago (R$) *
@@ -289,7 +302,7 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
                 onChange={(e) => setPurchasePrice(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-white font-mono focus:outline-none focus:border-amber-500"
               />
-              <p className="text-[10px] text-slate-500 mt-1">Será debitado do seu saldo bancário.</p>
+              <p className="text-[10px] text-slate-500 mt-1">{mode === 'buy' ? 'Será debitado do seu saldo bancário.' : 'Preço do veículo antes da entrada, juros e tarifas.'}</p>
             </div>
           ) : (
             <div>
@@ -302,6 +315,17 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
             </div>
           )}
         </div>
+
+        {mode === 'finance' && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <label className="text-xs text-slate-300">Entrada (R$)<input type="number" min="0" step="0.01" required value={downPayment} onChange={e => setDownPayment(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white" /></label>
+          <label className="text-xs text-slate-300">Parcelas (dias consecutivos)<input type="number" min="1" max="120" step="1" required value={installmentCount} onChange={e => setInstallmentCount(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white" /></label>
+          <label className="text-xs text-slate-300">Juros por parcela (%)<input type="number" min="0" max="1000" step="0.01" required value={financeRate} onChange={e => setFinanceRate(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white" /></label>
+          <label className="text-xs text-slate-300">Método<select value={financeMethod} onChange={e => setFinanceMethod(e.target.value as 'flat' | 'compound')} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white"><option value="flat">Juros simples</option><option value="compound">Juros compostos</option></select></label>
+          <label className="text-xs text-slate-300">Tarifas (R$)<input type="number" min="0" step="0.01" value={financeFees} onChange={e => setFinanceFees(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white" /></label>
+          <label className="text-xs text-slate-300">Data inicial<input type="date" required value={financeStart} onChange={e => setFinanceStart(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white" /></label>
+          <label className="text-xs text-slate-300">Primeiro vencimento<input type="date" required value={financeFirstDue} onChange={e => setFinanceFirstDue(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 p-2.5 text-white" /></label>
+          {(() => { try { const q = GarageService.calculateVehicleFinancing(Number(purchasePrice), Number(downPayment), Number(installmentCount), Number(financeRate), financeMethod, Number(financeFees)); return <div className="sm:col-span-2 rounded-xl bg-slate-950 p-3 text-xs text-slate-300">Entrada {formatBRL(Number(downPayment) || 0)} · Financiado {formatBRL(q.total)} · parcela {formatBRL(q.installmentCents / 100)} (última {formatBRL(q.finalInstallmentCents / 100)}) · juros e tarifas {formatBRL(q.interest + q.fees)} · custo total {formatBRL(Number(downPayment) + q.total)}<p className="mt-1 text-[10px] text-slate-500">O vencimento é processado por data persistida; o pagamento não é automático.</p></div>; } catch { return null; } })()}
+        </div>}
 
         {/* Engine & Fuel Type */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -493,14 +517,14 @@ export const NewVehicleModal: React.FC<NewVehicleModalProps> = ({ isOpen, onClos
             className={`px-5 py-2.5 font-bold text-sm rounded-xl transition-all shadow-lg cursor-pointer disabled:opacity-50 ${
               mode === 'buy'
                 ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
-                : 'bg-sky-500 hover:bg-sky-400 text-slate-950 shadow-sky-500/20'
+                : mode === 'finance' ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20' : 'bg-sky-500 hover:bg-sky-400 text-slate-950 shadow-sky-500/20'
             }`}
           >
             {isSubmitting
               ? 'Salvando...'
               : mode === 'buy'
               ? 'Confirmar Compra'
-              : 'Cadastrar Veículo'}
+              : mode === 'finance' ? 'Confirmar Financiamento' : 'Cadastrar Veículo'}
           </button>
         </div>
       </form>

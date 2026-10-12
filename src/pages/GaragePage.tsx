@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useCareer } from '../context/CareerContext';
 import { VehicleCard } from '../components/garage/VehicleCard';
 import { NewVehicleModal } from '../components/garage/NewVehicleModal';
@@ -10,7 +10,7 @@ import { EditVehicleModal } from '../components/garage/EditVehicleModal';
 import { Modal } from '../components/common/Modal';
 import { FUEL_LABELS, GarageService } from '../services/garageService';
 import { formatBRL } from '../utils/currency';
-import type { Vehicle, VehicleEvent } from '../types';
+import type { Vehicle, VehicleEvent, VehicleFinancingContract } from '../types';
 import {
   Car,
   Plus,
@@ -393,6 +393,24 @@ export const GaragePage: React.FC = () => {
   const soldVehicles = allVehicles.filter((v) => v.isSold);
   const garageValue = vehicles.reduce((acc, v) => acc + v.marketValue, 0);
   const maintenanceCount = vehicles.filter((v) => v.status === 'in_maintenance').length;
+  const [financings, setFinancings] = useState<VehicleFinancingContract[]>([]);
+  const [financingBusy, setFinancingBusy] = useState(false);
+  const [financingError, setFinancingError] = useState('');
+  const loadFinancings = async () => setFinancings(await GarageService.getVehicleFinancings());
+  useEffect(() => { void loadFinancings(); }, []);
+  const payInstallment = async (contract: VehicleFinancingContract, installmentId: string, amount: number) => {
+    setFinancingBusy(true); setFinancingError('');
+    try { await GarageService.payVehicleFinancingInstallment(contract.id, installmentId, crypto.randomUUID(), amount); await loadFinancings(); }
+    catch (error) { setFinancingError(error instanceof Error ? error.message : 'Não foi possível pagar a parcela.'); }
+    finally { setFinancingBusy(false); }
+  };
+  const payoff = async (contract: VehicleFinancingContract) => {
+    if (!window.confirm(`Quitar ${contract.vehicleName} por ${formatBRL(contract.remainingBalance)}? O valor considera o saldo remanescente atual, sem abatimento adicional de juros futuros.`)) return;
+    setFinancingBusy(true); setFinancingError('');
+    try { await GarageService.payOffVehicleFinancing(contract.id, crypto.randomUUID()); await loadFinancings(); }
+    catch (error) { setFinancingError(error instanceof Error ? error.message : 'Não foi possível quitar o financiamento.'); }
+    finally { setFinancingBusy(false); }
+  };
 
   const openModal = (modal: GarageModal, vehicle?: Vehicle) => {
     setSelectedVehicle(vehicle ?? null);
@@ -406,6 +424,7 @@ export const GaragePage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {financings.length > 0 && <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5"><h2 className="font-bold text-white">Financiamentos de veículos</h2>{financingError && <p role="alert" className="mt-2 text-xs text-rose-300">{financingError}</p>}<div className="mt-3 space-y-3">{financings.map(contract => <article key={contract.id} className="rounded-xl border border-slate-800 bg-slate-950 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-semibold text-slate-200">{contract.vehicleName}</p><p className="text-xs text-slate-500">{contract.status === 'active' ? `${contract.installments.filter(item => item.status !== 'paid').length} parcelas · saldo ${formatBRL(contract.remainingBalance)}` : contract.status === 'paid' ? 'Quitado' : 'Encerrado'}</p></div>{contract.status === 'active' && <button disabled={financingBusy || contract.remainingBalance > (career?.currentBalance ?? 0)} onClick={() => void payoff(contract)} className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 disabled:opacity-40">Quitar</button>}</div>{contract.status === 'active' && contract.installments.filter(item => item.status !== 'paid').slice(0, 3).map(item => <div key={item.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-2 text-xs"><span className="text-slate-400">Parcela {item.number} · vence {new Date(item.dueDate).toLocaleDateString('pt-BR')} · {item.status === 'overdue' ? 'Atrasada' : 'Pendente'} · {formatBRL(item.amount-item.paidAmount)}</span><button disabled={financingBusy || (career?.currentBalance ?? 0) < item.amount-item.paidAmount} onClick={() => void payInstallment(contract, item.id, item.amount-item.paidAmount)} className="rounded-lg border border-amber-500/40 px-3 py-1.5 text-amber-300 disabled:opacity-40">Pagar parcela</button></div>)}</article>)}</div></section>}
       {/* ── Page Header ─────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-4">
         <div>
