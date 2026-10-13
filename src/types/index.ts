@@ -396,8 +396,6 @@ export interface Bill {
 /* Configurações globais do sistema de contas */
 export interface BillSettings {
   defaultDailyInterestRate: number;   // Padrão: 0.10
-  ipvaRatePercent: number;            // padrão: 10
-  iptuRatePercent: number;            // padrão: 10
   ipvaFrequency: BillFrequency;       // 'weekly'
   iptuFrequency: BillFrequency;       // 'weekly'
 }

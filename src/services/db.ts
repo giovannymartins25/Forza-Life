@@ -34,8 +34,6 @@ export const DB_VERSION = 11;
 
 export const DEFAULT_BILL_SETTINGS = {
   defaultDailyInterestRate: 0.10,
-  ipvaRatePercent: 10,
-  iptuRatePercent: 10,
   ipvaFrequency: 'weekly' as const,
   iptuFrequency: 'weekly' as const,
 };

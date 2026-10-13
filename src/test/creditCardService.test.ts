@@ -181,4 +181,25 @@ describe('CreditCardService', () => {
     expect(dates).toHaveLength(6);
     for (let index = 1; index < dates.length; index++) expect(new Date(dates[index]).getTime() - new Date(dates[index - 1]).getTime()).toBe(86400000);
   });
+
+  it('parcels the generated IPVA amount without changing the original bill or adding a second tax bill', async () => {
+    const card = await CreditCardService.createCard({ ...input, limit: 20000, limitGrowth: { ...input.limitGrowth!, maxLimit: 20000 } });
+    const { vehicle } = await GarageService.registerInitialVehicle({
+      brand: 'Horizon', model: 'Tax Test', year: 2025, marketValue: 100000, purchasePrice: 0,
+      engineType: 'combustion', fuelType: 'gasoline_regular', tankCapacity: 50, currentFuel: 10,
+    });
+    await GarageService.ensureIPVABills();
+    const taxBill = (await billService.getAllBills()).find(item => item.relatedAssetId === vehicle.id && item.category === 'vehicle_tax')!;
+    const originalAmountCents = taxBill.originalAmountCents;
+    expect(originalAmountCents).toBe(1000000);
+
+    const paid = await billService.payBillWithCreditCard(taxBill.id, card.id, 4, 'generated-tax-card-payment');
+    expect(paid.purchase.totalAmount).toBe(10000);
+    expect(paid.purchase.installments.reduce((sum, item) => sum + item.amount, 0)).toBe(10000);
+    await GarageService.ensureIPVABills();
+    const taxBills = (await billService.getAllBills()).filter(item => item.relatedAssetId === vehicle.id && item.category === 'vehicle_tax');
+    expect(taxBills).toHaveLength(1);
+    expect(taxBills[0].originalAmountCents).toBe(originalAmountCents);
+    expect(taxBills[0].status).toBe('paid');
+  });
 });

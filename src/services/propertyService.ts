@@ -15,6 +15,7 @@ import type {
   HousingRentalContract,
 } from '../types';
 import { advanceRentalDueDate } from '../utils/recurrence';
+import { ASSET_TAX_RATE, calculateAssetTaxAmount } from './assetTax';
 
 export interface CreatePropertyDTO {
   name: string;
@@ -397,19 +398,23 @@ export class PropertyService {
     const safeUpdates = { ...updates };
     delete safeUpdates.referenceValue;
     delete safeUpdates.id;
+    const manualEstimatedValueWasUpdated = Object.prototype.hasOwnProperty.call(safeUpdates, 'manualEstimatedValue');
+    const nextManualEstimatedValue = manualEstimatedValueWasUpdated
+      ? safeUpdates.manualEstimatedValue
+      : current.manualEstimatedValue;
 
     // Recalcula valor de mercado se houver alteração de condição ou ajuste
     let estimatedMarketValue = current.estimatedMarketValue;
     if (
       safeUpdates.condition !== undefined ||
       safeUpdates.marketAdjustmentPercent !== undefined ||
-      safeUpdates.manualEstimatedValue !== undefined
+      manualEstimatedValueWasUpdated
     ) {
       const calc = calculateEstimatedMarketValue({
         referenceValue: current.referenceValue,
         condition: safeUpdates.condition ?? current.condition,
         marketAdjustmentPercent: safeUpdates.marketAdjustmentPercent ?? current.marketAdjustmentPercent,
-        manualEstimatedValue: safeUpdates.manualEstimatedValue ?? current.manualEstimatedValue,
+        manualEstimatedValue: nextManualEstimatedValue,
       });
       estimatedMarketValue = calc.value;
     }
@@ -825,7 +830,7 @@ export class PropertyService {
   /**
    * Garante a criação de contas semanais de IPTU no sistema de contas oficial (billService)
    * Regras:
-   * - 10% do valor de referência original
+   * - 10% do valor de mercado atual (ou valor manual definido)
    * - Recorrência semanal
    * - Vencimento no sábado (todo o sábado disponível para pagamento)
    * - 10% de juros compostos diários após vencimento
@@ -840,15 +845,18 @@ export class PropertyService {
     const activeProperties = properties.filter((p) => !p.isSold && p.status !== 'sold');
 
     for (const prop of activeProperties) {
-      const career = await FinanceService.getCareerState();
-      // Atualizar apenas o valor das novas obrigações; contas já criadas preservam o histórico.
-      if (career.settings?.billSettings?.iptuRatePercent === 25) {
-        career.settings.billSettings.iptuRatePercent = 10;
-        await db.put('career', career);
-      }
-      const iptuRate = career.settings?.billSettings?.iptuRatePercent ?? 10;
       const currentValue = prop.manualEstimatedValue ?? prop.estimatedMarketValue ?? prop.referenceValue;
-      const iptuAmount = Math.round(currentValue * (iptuRate / 100) * 100) / 100;
+      // Idempotent repair: touch only future, unpaid auto-tax bills with no payment history.
+      for (const bill of allBills) {
+        if (bill.category !== 'property_tax' || bill.relatedAssetId !== prop.id || bill.relatedAssetType !== 'property') continue;
+        if (bill.status !== 'pending' || bill.payments?.length || bill.accruedInterestCents !== 0 || new Date(bill.dueDate) <= referenceDate) continue;
+        const correctedCents = Math.round(calculateAssetTaxAmount(currentValue) * 100);
+        if (bill.originalAmountCents !== correctedCents) {
+          await db.put('bills', { ...bill, originalAmountCents: correctedCents, description: `IPTU semanal referente ao imóvel ${prop.name} (${ASSET_TAX_RATE * 100}% do valor atual: R$ ${currentValue.toFixed(2)})` });
+          bill.originalAmountCents = correctedCents;
+        }
+      }
+      const iptuAmount = calculateAssetTaxAmount(currentValue);
       if (iptuAmount <= 0) continue;
 
       const saturdayDue = getNextSaturdayDueDate(referenceDate);
@@ -865,7 +873,7 @@ export class PropertyService {
       if (!alreadyHasBillForPeriod) {
         const newBill = await billService.createBill({
           name: `IPTU - ${prop.name}`,
-          description: `IPTU semanal referente ao imóvel ${prop.name} (${iptuRate}% do valor atual: R$ ${currentValue.toFixed(2)})`,
+          description: `IPTU semanal referente ao imóvel ${prop.name} (${ASSET_TAX_RATE * 100}% do valor atual: R$ ${currentValue.toFixed(2)})`,
           category: 'property_tax',
           amount: iptuAmount,
           dueDate: saturdayIso,

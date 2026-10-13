@@ -1,6 +1,7 @@
 import { getDatabase, INITIAL_CAREER_STATE } from './db';
 import { FinanceService } from './financeService';
 import { billService } from './billService';
+import { ASSET_TAX_RATE, calculateAssetTaxAmount } from './assetTax';
 import { getNextSaturdayDueDate } from './propertyService';
 import type {
   ComponentWear,
@@ -400,22 +401,24 @@ export class GarageService {
     ]);
     const due = getNextSaturdayDueDate(referenceDate);
     const dueDay = due.toDateString();
-    // 25% era o padrão fixo anterior e não era editável na interface. Atualizamos
-    // esse padrão legado uma única vez; valores personalizados diferentes são preservados.
-    if (career.settings?.billSettings?.ipvaRatePercent === 25) {
-      career.settings.billSettings.ipvaRatePercent = 10;
-      await db.put('career', career);
-    }
-    const ratePercent = career.settings?.billSettings?.ipvaRatePercent ?? 10;
-    const rate = ratePercent / 100;
     for (const vehicle of vehicles) {
       if (vehicle.isSold) continue;
+      // Idempotent repair: touch only future, unpaid auto-tax bills with no payment history.
+      for (const bill of bills) {
+        if (bill.category !== 'vehicle_tax' || bill.relatedAssetId !== vehicle.id || bill.relatedAssetType !== 'vehicle') continue;
+        if (bill.status !== 'pending' || bill.payments?.length || bill.accruedInterestCents !== 0 || new Date(bill.dueDate) <= referenceDate) continue;
+        const correctedCents = Math.round(calculateAssetTaxAmount(vehicle.marketValue) * 100);
+        if (bill.originalAmountCents !== correctedCents) {
+          await db.put('bills', { ...bill, originalAmountCents: correctedCents, description: `IPVA semanal: ${ASSET_TAX_RATE * 100}% do valor atual do veículo.` });
+          bill.originalAmountCents = correctedCents;
+        }
+      }
       if (bills.some((b) => b.category === 'vehicle_tax' && b.relatedAssetId === vehicle.id && new Date(b.dueDate).toDateString() === dueDay)) continue;
-      const amount = Math.round(vehicle.marketValue * rate * 100) / 100;
+      const amount = calculateAssetTaxAmount(vehicle.marketValue);
       if (amount <= 0) continue;
       const bill = await billService.createBill({
         name: `IPVA - ${vehicle.brand} ${vehicle.model}`,
-        description: `IPVA semanal: ${ratePercent}% do valor de referência do veículo.`,
+        description: `IPVA semanal: ${ASSET_TAX_RATE * 100}% do valor atual do veículo.`,
         category: 'vehicle_tax', amount, dueDate: due.toISOString(), frequency: 'weekly',
         dailyInterestRate: career.settings?.billSettings?.defaultDailyInterestRate ?? 0.10,
         relatedAssetId: vehicle.id, relatedAssetType: 'vehicle',

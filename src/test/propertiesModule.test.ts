@@ -314,6 +314,92 @@ describe('Horizon Life — Módulo de Imóveis, Propriedades e Aluguéis (Fase I
       const paidBill = await billService.getBillById(iptuBill!.id);
       expect(paidBill?.status).toBe('paid');
     });
+
+  it.each([[300000, 30000], [150000, 15000]])('calcula IPTU como 10%% do valor atual do imóvel: %s -> %s', async (currentValue, expectedTax) => {
+    const property = await PropertyService.createProperty({
+      name: `Imóvel ${currentValue}`, type: 'house', referenceValue: currentValue,
+      acquisitionType: 'registered', description: 'Teste de alíquota',
+    });
+    const bill = (await billService.getAllBills()).find(item => item.relatedAssetId === property.id && item.category === 'property_tax');
+    expect(bill?.originalAmountCents).toBe(expectedTax * 100);
+  });
+
+  it('reprices only future unpaid IPTU after market value changes, preserves paid records, and does not duplicate', async () => {
+    const property = await PropertyService.createProperty({
+      name: 'Imóvel com valor alterado', type: 'house', referenceValue: 300000,
+      acquisitionType: 'registered', description: 'Teste de migração segura',
+    });
+    const career = await FinanceService.getCareerState();
+    Object.assign(career.settings!.billSettings!, { iptuRatePercent: 25 });
+    await (await getDatabase()).put('career', career);
+    await PropertyService.updateProperty(property.id, { manualEstimatedValue: 150000 });
+    await PropertyService.ensureIPTUBills();
+    let bills = (await billService.getAllBills()).filter(item => item.relatedAssetId === property.id && item.category === 'property_tax');
+    expect(bills).toHaveLength(1);
+    expect(bills[0].originalAmountCents).toBe(1500000);
+
+    await (await getDatabase()).put('bills', { ...bills[0], originalAmountCents: 7500000 });
+    await PropertyService.ensureIPTUBills();
+    bills = (await billService.getAllBills()).filter(item => item.relatedAssetId === property.id && item.category === 'property_tax');
+    expect(bills[0].originalAmountCents).toBe(1500000);
+
+    await (await getDatabase()).put('bills', { ...bills[0], originalAmountCents: 7500000 });
+    await FinanceService.addMoney(100000, 'Saldo de teste');
+    await billService.payBill(bills[0].id);
+    await PropertyService.updateProperty(property.id, { manualEstimatedValue: 300000 });
+    await PropertyService.ensureIPTUBills();
+    bills = (await billService.getAllBills()).filter(item => item.relatedAssetId === property.id && item.category === 'property_tax');
+    expect(bills).toHaveLength(1);
+    expect(bills[0].originalAmountCents).toBe(7500000);
+    expect(bills[0].status).toBe('paid');
+  });
+
+  it('recalculates the market value when a manual property valuation is cleared', async () => {
+    const property = await PropertyService.createProperty({
+      name: 'Imóvel com avaliação removida', type: 'house', referenceValue: 300000,
+      acquisitionType: 'registered', description: 'Teste de avaliação atual',
+    });
+    await PropertyService.updateProperty(property.id, { manualEstimatedValue: 150000 });
+    const reset = await PropertyService.updateProperty(property.id, { manualEstimatedValue: undefined });
+    expect(reset.manualEstimatedValue).toBeUndefined();
+    expect(reset.estimatedMarketValue).toBe(300000);
+    await PropertyService.ensureIPTUBills();
+    const bill = (await billService.getAllBills()).find(item => item.relatedAssetId === property.id && item.category === 'property_tax');
+    expect(bill?.originalAmountCents).toBe(3000000);
+  });
+
+  it('uses the current property value for the next recurring IPTU bill', async () => {
+    const property = await PropertyService.createProperty({
+      name: 'Imóvel recorrente', type: 'house', referenceValue: 150000,
+      acquisitionType: 'registered', description: 'Teste de recorrência',
+    });
+    await PropertyService.updateProperty(property.id, { manualEstimatedValue: 300000 });
+    const firstBill = (await billService.getAllBills()).find(item => item.relatedAssetId === property.id && item.category === 'property_tax')!;
+    const afterDueDate = new Date(new Date(firstBill.dueDate).getTime() + 24 * 60 * 60 * 1000);
+    await billService.processAllBills(afterDueDate);
+    const bills = (await billService.getAllBills()).filter(item => item.relatedAssetId === property.id && item.category === 'property_tax');
+    expect(bills).toHaveLength(2);
+    const nextBill = bills.slice().sort((left, right) => left.dueDate.localeCompare(right.dueDate))[1];
+    expect(nextBill.originalAmountCents).toBe(3000000);
+  });
+
+  it('keeps an overdue IPTU obligation unchanged when correcting future bills', async () => {
+    const property = await PropertyService.createProperty({
+      name: 'Imóvel com IPTU histórico', type: 'house', referenceValue: 300000,
+      acquisitionType: 'registered', description: 'Teste de histórico',
+    });
+    const overdue = await billService.createBill({
+      name: 'IPTU histórico', category: 'property_tax', amount: 75000,
+      dueDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(), frequency: 'weekly', dailyInterestRate: 0.10,
+      relatedAssetId: property.id, relatedAssetType: 'property',
+    });
+    const storedBefore = (await billService.getBillById(overdue.id))!;
+    await PropertyService.ensureIPTUBills();
+    const storedAfter = (await billService.getBillById(overdue.id))!;
+    expect(storedAfter.originalAmountCents).toBe(storedBefore.originalAmountCents);
+    expect(storedAfter.accruedInterestCents).toBe(storedBefore.accruedInterestCents);
+    expect(storedAfter.status).toBe(storedBefore.status);
+  });
   });
 
   describe('11. Juros compostos e prevenção de acréscimos duplicados', () => {

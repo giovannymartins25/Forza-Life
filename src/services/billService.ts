@@ -8,6 +8,7 @@ import type {
   BillStatus,
   BillPaymentRecord,
 } from '../types';
+import { ASSET_TAX_RATE, calculateAssetTaxCents } from './assetTax';
 
 export interface CreateBillInput {
   name: string;
@@ -404,8 +405,24 @@ class BillService {
 
           if (!alreadyExists) {
             const nextDaysOverdue = calculateDaysOverdue(nextDueDateStr, referenceDate);
+            let nextOriginalAmountCents = currentBill.originalAmountCents;
+            let nextDescription = currentBill.description;
+            if (currentBill.category === 'vehicle_tax' && currentBill.relatedAssetType === 'vehicle' && currentBill.relatedAssetId) {
+              const vehicle = await db.get('vehicles', currentBill.relatedAssetId);
+              if (vehicle) {
+                nextOriginalAmountCents = calculateAssetTaxCents(vehicle.marketValue);
+                nextDescription = `IPVA semanal: ${ASSET_TAX_RATE * 100}% do valor atual do veículo (R$ ${vehicle.marketValue.toFixed(2)}).`;
+              }
+            } else if (currentBill.category === 'property_tax' && currentBill.relatedAssetType === 'property' && currentBill.relatedAssetId) {
+              const property = await db.get('properties', currentBill.relatedAssetId);
+              if (property) {
+                const currentValue = property.manualEstimatedValue ?? property.estimatedMarketValue ?? property.referenceValue;
+                nextOriginalAmountCents = calculateAssetTaxCents(currentValue);
+                nextDescription = `IPTU semanal referente ao imóvel ${property.name} (${ASSET_TAX_RATE * 100}% do valor atual: R$ ${currentValue.toFixed(2)})`;
+              }
+            }
             const nextInterest = calculateBillInterest(
-              currentBill.originalAmountCents,
+              nextOriginalAmountCents,
               currentBill.dailyInterestRate,
               nextDaysOverdue
             );
@@ -413,9 +430,9 @@ class BillService {
             const nextBill: Bill = {
               id: crypto.randomUUID(),
               name: currentBill.name,
-              description: currentBill.description,
+              description: nextDescription,
               category: currentBill.category,
-              originalAmountCents: currentBill.originalAmountCents,
+              originalAmountCents: nextOriginalAmountCents,
               accruedInterestCents: nextInterest.accruedInterestCents,
               createdAt: referenceDate.toISOString(),
               dueDate: nextDueDateStr,

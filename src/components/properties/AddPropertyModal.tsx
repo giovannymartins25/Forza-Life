@@ -7,6 +7,7 @@ import {
   PROPERTY_CONDITION_LABELS,
   calculateEstimatedMarketValue,
 } from '../../services/propertyService';
+import { calculateAssetTaxAmount } from '../../services/assetTax';
 import {
   DollarSign,
   AlertCircle,
@@ -52,8 +53,8 @@ export const AddPropertyModal: React.FC<AddPropertyModalProps> = ({ isOpen, onCl
     });
   }, [numReference, condition, marketAdjustmentPercent]);
 
-  // IPTU semanal previsto (10% do valor de referência)
-  const estimatedIPTU = Math.round(numReference * 0.10 * 100) / 100;
+  // A prévia usa o valor de mercado atual estimado para o imóvel.
+  const estimatedIPTU = calculateAssetTaxAmount(marketPreview.value);
 
   const hasEnoughBalance = acquisitionType === 'registered' || currentBalance >= numPurchase;
 
@@ -351,7 +352,7 @@ export const AddPropertyModal: React.FC<AddPropertyModalProps> = ({ isOpen, onCl
             </span>
           </div>
           <div className="flex items-center justify-between text-xs border-t border-slate-850 pt-1.5">
-            <span className="text-slate-400 font-medium">IPTU Semanal Previsto (10% base):</span>
+            <span className="text-slate-400 font-medium">IPTU Semanal Previsto (10% do valor atual):</span>
             <span className="font-bold text-rose-400 font-mono">
               R$ {estimatedIPTU.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} / semana
             </span>
