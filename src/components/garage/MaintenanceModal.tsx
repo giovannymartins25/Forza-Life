@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Modal } from '../common/Modal';
 import { useCareer } from '../../context/CareerContext';
 import { formatBRL } from '../../utils/currency';
-import { GarageService, DEFAULT_WEAR } from '../../services/garageService';
+import { GarageService, DEFAULT_REPAIR_PERCENTAGES, DEFAULT_WEAR } from '../../services/garageService';
 import type { ComponentWear, Vehicle } from '../../types';
 import { Wrench, Clock, AlertTriangle } from 'lucide-react';
 import { CreditCardService } from '../../services/creditCardService';
@@ -66,10 +66,11 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
     setSelected(withWear);
   };
 
-  const { totalCost, totalDurationMinutes } = GarageService.calculateRepairCosts(
+  const repairCosts = GarageService.calculateRepairCosts(
     vehicle,
     selected
   );
+  const { totalCost, totalDurationMinutes } = repairCosts;
   const selectedCardLimit = availableLimits[cardId] ?? 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -126,7 +127,7 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
           </div>
           <p className="text-slate-400">
             <code className="bg-slate-900 px-1 py-0.5 rounded text-amber-300">
-              custo = valorRef ({formatBRL(vehicle.marketValue)}) × %Integral × %DesgasteAtual
+              custo = valorRef ({formatBRL(vehicle.marketValue)}) × %Integral × %DesgasteAtual × 50%
             </code>
           </p>
         </div>
@@ -159,13 +160,9 @@ export const MaintenanceModal: React.FC<MaintenanceModalProps> = ({
             const compKey = key as keyof ComponentWear;
             const wear = vehicle.wear[compKey] || 0;
             const isChecked = selected.includes(compKey);
-            const percentIntegral = vehicle.repairCostPercentages[compKey] || 20;
-            const singleCost =
-              wear > 0
-                ? Math.round(
-                    vehicle.marketValue * (percentIntegral / 100) * (wear / 100) * 100
-                  ) / 100
-                : 0;
+            const percentIntegral =
+              vehicle.repairCostPercentages[compKey] ?? DEFAULT_REPAIR_PERCENTAGES[compKey] ?? 20;
+            const singleCost = GarageService.calculateRepairCosts(vehicle, [compKey]).totalCost;
 
             return (
               <label

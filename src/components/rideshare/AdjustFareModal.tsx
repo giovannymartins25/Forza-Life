@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
 import type { RideshareRide } from '../../types';
 import { formatBRL } from '../../utils/currency';
+import { MAX_RIDE_FARE } from '../../services/rideshareService';
 import { DollarSign, ArrowRight, User } from 'lucide-react';
 
 interface AdjustFareModalProps {
@@ -17,22 +18,23 @@ export const AdjustFareModal: React.FC<AdjustFareModalProps> = ({
   ride,
   onConfirm,
 }) => {
-  if (!ride) return null;
-
-  const [ratePerKm, setRatePerKm] = useState<number>(ride.ratePerKm);
-  const [fare, setFare] = useState<number>(ride.finalFare);
+  const [ratePerKm, setRatePerKm] = useState<number>(ride?.ratePerKm ?? 0);
+  const [fare, setFare] = useState<number>(ride?.finalFare ?? 0);
   const [mode, setMode] = useState<'rate' | 'direct'>('rate');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  if (!ride) return null;
+
   const handleRateChange = (newRate: number) => {
     setRatePerKm(newRate);
-    setFare(Math.round(ride.passengerDistanceKm * newRate * 100) / 100);
+    setFare(Math.min(MAX_RIDE_FARE, Math.round(ride.passengerDistanceKm * newRate * 100) / 100));
   };
 
   const handleFareChange = (newFare: number) => {
-    setFare(newFare);
+    const clampedFare = Math.min(MAX_RIDE_FARE, newFare);
+    setFare(clampedFare);
     if (ride.passengerDistanceKm > 0) {
-      setRatePerKm(Math.round((newFare / ride.passengerDistanceKm) * 100) / 100);
+      setRatePerKm(Math.round((clampedFare / ride.passengerDistanceKm) * 100) / 100);
     }
   };
 
@@ -41,7 +43,7 @@ export const AdjustFareModal: React.FC<AdjustFareModalProps> = ({
     if (fare <= 0) return;
     try {
       setIsSubmitting(true);
-      await onConfirm(ride.id, fare, ratePerKm);
+      await onConfirm(ride.id, Math.min(MAX_RIDE_FARE, fare), ratePerKm);
       onClose();
     } finally {
       setIsSubmitting(false);
@@ -134,6 +136,7 @@ export const AdjustFareModal: React.FC<AdjustFareModalProps> = ({
               type="number"
               step="1.00"
               min="1.00"
+              max={MAX_RIDE_FARE}
               value={fare}
               onChange={(e) => handleFareChange(parseFloat(e.target.value) || 0)}
               className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono text-base focus:outline-none focus:border-emerald-500 transition-colors"

@@ -146,6 +146,11 @@ export const RideHistoryTable: React.FC<RideHistoryTableProps> = ({ rides }) => 
                       (+{ride.pickupDistanceKm} km)
                     </span>
                   </span>
+                  {ride.durationMinutes !== undefined && (
+                    <span className="block text-[10px] text-sky-400">
+                      {ride.durationMinutes.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} min
+                    </span>
+                  )}
                 </div>
 
                 <div className="text-right">

@@ -303,7 +303,8 @@ export const RidesharePage: React.FC<RidesharePageProps> = ({ onBack }) => {
             {(rideshareStats?.totalWorkedDistanceKm || 0).toFixed(1)} km
           </span>
           <span className="text-[10px] text-slate-500">
-            {(rideshareStats?.shiftWorkedDistanceKm || 0).toFixed(1)} km no turno
+            {(rideshareStats?.shiftWorkedDistanceKm || 0).toFixed(1)} km no turno •{' '}
+            {(rideshareStats?.shiftRideDurationMinutes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} min de corrida
           </span>
         </div>
 
@@ -327,7 +328,8 @@ export const RidesharePage: React.FC<RidesharePageProps> = ({ onBack }) => {
             {formatBRL(rideshareStats?.totalGrossEarnings || 0)}
           </span>
           <span className="text-[10px] text-slate-500">
-            {rideshareStats?.totalCompletedRides || 0} corridas concluídas
+            {rideshareStats?.totalCompletedRides || 0} corridas •{' '}
+            {(rideshareStats?.totalRideDurationMinutes || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} min de corrida
           </span>
         </div>
       </div>

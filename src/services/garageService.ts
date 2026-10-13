@@ -931,7 +931,7 @@ export class GarageService {
 
   /**
    * Calcula o custo de reparo proporcional de cada componente e custo total.
-   * Fórmula: custoReparo = valorReferencia * (percentualReparoIntegral / 100) * (desgasteAtual / 100)
+   * Fórmula: custoReparo = valorReferencia * (percentualReparoIntegral / 100) * (desgasteAtual / 100) * 50%
    */
   static calculateRepairCosts(
     vehicle: Vehicle,
@@ -945,27 +945,34 @@ export class GarageService {
     let totalCost = 0;
     let totalDurationMinutes = 0;
 
-    for (const comp of selectedComponents) {
-      const currentWear = vehicle.wear[comp] ?? 0;
+    for (const comp of new Set(selectedComponents)) {
+      const rawWear = vehicle.wear[comp] ?? 0;
+      if (!Number.isFinite(rawWear)) {
+        throw new Error(`O desgaste do componente ${comp} não é válido.`);
+      }
+      const currentWear = Math.min(100, Math.max(0, rawWear));
       if (currentWear <= 0) continue; // sem desgaste, sem custo
 
       const percentIntegral = vehicle.repairCostPercentages[comp] ?? DEFAULT_REPAIR_PERCENTAGES[comp] ?? 20;
       const duration = vehicle.repairDurations[comp] ?? DEFAULT_REPAIR_DURATIONS[comp] ?? 30;
+      if (!Number.isFinite(percentIntegral) || percentIntegral < 0 || !Number.isFinite(duration) || duration < 0) {
+        throw new Error(`O custo ou tempo-base do componente ${comp} não é válido.`);
+      }
 
-      // Fórmula obrigatória:
       const cost = Math.round(
-        vehicle.marketValue * (percentIntegral / 100) * (currentWear / 100) * 100
+        vehicle.marketValue * (percentIntegral / 100) * (currentWear / 100) * 0.5 * 100
       ) / 100;
+      const durationMinutes = duration * (currentWear / 100);
 
       totalCost += cost;
-      totalDurationMinutes += duration; // SOMA dos tempos (não max)
+      totalDurationMinutes += durationMinutes;
 
       breakdown.push({
         component: comp,
         wear: currentWear,
         percentIntegral,
         cost,
-        durationMinutes: duration,
+        durationMinutes,
       });
     }
 
@@ -980,11 +987,11 @@ export class GarageService {
    * Executa a manutenção e reparos selecionados com débito bancário auditado.
    */
   static async executeRepair(dto: RepairDTO): Promise<{ vehicle: Vehicle; event: VehicleEvent }> {
-    const { vehicleId, selectedComponents, instantRepair = false } = dto;
-
-    if (!selectedComponents || selectedComponents.length === 0) {
+    const { vehicleId, instantRepair = false } = dto;
+    if (!dto.selectedComponents || dto.selectedComponents.length === 0) {
       throw new Error('Selecione pelo menos um componente para reparo.');
     }
+    const selectedComponents = [...new Set(dto.selectedComponents)];
 
     const vehicle = await this.getVehicleById(vehicleId);
     if (!vehicle) throw new Error('Veículo não encontrado.');

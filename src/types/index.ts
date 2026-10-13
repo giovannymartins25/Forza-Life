@@ -430,6 +430,7 @@ export interface RideshareRide {
   acceptedAt?: string;
   completedAt?: string;
   declinedAt?: string;
+  durationMinutes?: number;
   transactionId?: string;      // ID da transação financeira no banco (idempotência)
   notes?: string;
 }
@@ -468,6 +469,8 @@ export interface RideshareStats {
   totalWorkedDistanceKm: number;
   shiftDurationMinutes: number;
   totalDurationMinutes: number;
+  shiftRideDurationMinutes: number;
+  totalRideDurationMinutes: number;
   averageEarningsPerKm: number;
   fuelExpenses: number;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { RideshareService } from '../services/rideshareService';
+import { calculateRideDurationMinutes, MAX_RIDE_FARE, RideshareService } from '../services/rideshareService';
 import { GarageService } from '../services/garageService';
 import { FinanceService } from '../services/financeService';
 import { BackupService, CURRENT_BACKUP_SCHEMA_VERSION } from '../services/backupService';
@@ -31,6 +31,68 @@ describe('Módulo de Motorista de Aplicativo (Rideshare / Jobs)', () => {
 
     const { vehicle } = await GarageService.registerInitialVehicle(dto);
     testVehicleId = vehicle.id;
+  });
+
+  it.each([[100, 20], [25, 5], [2.5, 0.5], [0, 0]])(
+    'converte %s km em %s minutos de corrida',
+    (distanceKm, expectedMinutes) => {
+      expect(calculateRideDurationMinutes(distanceKm)).toBe(expectedMinutes);
+    }
+  );
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejeita distância inválida na conversão de tempo (%s)',
+    (distanceKm) => {
+      expect(() => calculateRideDurationMinutes(distanceKm)).toThrow(/distância/i);
+    }
+  );
+
+  it.each([[100, 20], [25, 5]])(
+    'registra uma corrida de %s km com %s minutos proporcionais',
+    async (distanceKm, expectedMinutes) => {
+      await RideshareService.startShift(testVehicleId);
+      const [proposal] = await RideshareService.generateRideProposals(testVehicleId, 1, 1);
+      await RideshareService.acceptRide(proposal.id);
+      const { ride } = await RideshareService.completeRide({
+        rideId: proposal.id,
+        confirmedPassengerDistanceKm: distanceKm,
+        confirmedPickupDistanceKm: 0,
+      });
+      expect(ride.durationMinutes).toBe(expectedMinutes);
+      expect((await RideshareService.getStats()).shiftRideDurationMinutes).toBe(expectedMinutes);
+    }
+  );
+
+  it('limita a tarifa a R$ 100 em propostas, ajustes e crédito bancário', async () => {
+    await RideshareService.startShift(testVehicleId);
+    const [proposal] = await RideshareService.generateRideProposals(testVehicleId, 1, 10000);
+    expect(proposal.suggestedFare).toBe(MAX_RIDE_FARE);
+
+    const accepted = await RideshareService.acceptRide(proposal.id, { adjustedFare: 1000 });
+    expect(accepted.finalFare).toBe(MAX_RIDE_FARE);
+
+    const balanceBefore = (await FinanceService.getCareerState()).currentBalance;
+    const completed = await RideshareService.completeRide({
+      rideId: proposal.id,
+      confirmedFinalFare: 500,
+    });
+    expect(completed.ride.finalFare).toBe(MAX_RIDE_FARE);
+    expect((await FinanceService.getCareerState()).currentBalance).toBe(balanceBefore + MAX_RIDE_FARE);
+    const transaction = (await FinanceService.getAllTransactions()).find((item) => item.id === completed.transactionId);
+    expect(transaction?.amount).toBe(MAX_RIDE_FARE);
+  });
+
+  it('rejeita distâncias inválidas antes de creditar a corrida', async () => {
+    await RideshareService.startShift(testVehicleId);
+    const [proposal] = await RideshareService.generateRideProposals(testVehicleId, 1);
+    await RideshareService.acceptRide(proposal.id);
+    await expect(RideshareService.completeRide({
+      rideId: proposal.id,
+      confirmedPassengerDistanceKm: -1,
+    })).rejects.toThrow(/distância/i);
+    const [secondProposal] = await RideshareService.generateRideProposals(testVehicleId, 1);
+    await expect(RideshareService.acceptRide(secondProposal.id, { adjustedFare: Number.NaN })).rejects.toThrow(/valor ajustado/i);
+    expect(await FinanceService.getAllTransactions()).toHaveLength(0);
   });
 
   it('1. Geração de propostas válidas com campos obrigatórios e cálculos corretos', async () => {

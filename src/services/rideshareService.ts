@@ -11,6 +11,22 @@ import type {
   VehicleEvent,
 } from '../types';
 
+export const MAX_RIDE_FARE = 100;
+
+export function calculateRideDurationMinutes(distanceKm: number): number {
+  if (!Number.isFinite(distanceKm) || distanceKm < 0) {
+    throw new Error('A distância da corrida deve ser um número válido e não negativo.');
+  }
+  return distanceKm / 5;
+}
+
+function calculateRideFare(distanceKm: number, ratePerKm: number): number {
+  if (!Number.isFinite(distanceKm) || distanceKm <= 0 || !Number.isFinite(ratePerKm) || ratePerKm <= 0) {
+    throw new Error('A distância e a tarifa da corrida devem ser números válidos e maiores que zero.');
+  }
+  return Math.min(MAX_RIDE_FARE, Math.round(distanceKm * ratePerKm * 100) / 100);
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Bancos de Dados de Passageiros e Destinos Fictícios
    ═══════════════════════════════════════════════════════════════ */
@@ -74,6 +90,10 @@ export class RideshareService {
     const db = await getDatabase();
     const career = await FinanceService.getCareerState();
     const currentSettings = career.settings?.rideshareSettings || { ...DEFAULT_RIDESHARE_SETTINGS };
+    if (updates.defaultRatePerKm !== undefined &&
+      (!Number.isFinite(updates.defaultRatePerKm) || updates.defaultRatePerKm <= 0)) {
+      throw new Error('A tarifa padrão por quilômetro deve ser um número válido e maior que zero.');
+    }
 
     const newSettings: RideshareSettings = {
       ...currentSettings,
@@ -191,7 +211,10 @@ export class RideshareService {
     if (await GarageService.getActiveVehicleRental(vehicleId)) throw new Error('Veículo alugado não pode receber propostas de corrida.');
 
     const settings = await this.getSettings();
-    const ratePerKm = customRate && customRate > 0 ? customRate : settings.defaultRatePerKm;
+    const ratePerKm = customRate ?? settings.defaultRatePerKm;
+    if (!Number.isFinite(ratePerKm) || ratePerKm <= 0) {
+      throw new Error('A tarifa por quilômetro deve ser um número válido e maior que zero.');
+    }
     const activeShift = await this.getActiveShift();
 
     const db = await getDatabase();
@@ -214,7 +237,7 @@ export class RideshareService {
       const totalDistanceKm = Math.round((passengerDistanceKm + pickupDistanceKm) * 10) / 10;
 
       // Pagamento baseado na distância com passageiro
-      const suggestedFare = Math.round(passengerDistanceKm * ratePerKm * 100) / 100;
+      const suggestedFare = calculateRideFare(passengerDistanceKm, ratePerKm);
       const finalFare = suggestedFare;
 
       // Estimativa de combustível necessária
@@ -300,17 +323,26 @@ export class RideshareService {
       );
     }
 
-    let finalFare = ride.finalFare;
+    let finalFare = Math.min(MAX_RIDE_FARE, ride.finalFare);
     let ratePerKm = ride.ratePerKm;
 
-    if (options?.adjustedRate !== undefined && options.adjustedRate > 0) {
-      ratePerKm = options.adjustedRate;
-      finalFare = Math.round(ride.passengerDistanceKm * ratePerKm * 100) / 100;
-    } else if (options?.adjustedFare !== undefined && options.adjustedFare > 0) {
-      finalFare = Math.round(options.adjustedFare * 100) / 100;
-      if (ride.passengerDistanceKm > 0) {
-        ratePerKm = Math.round((options.adjustedFare / ride.passengerDistanceKm) * 100) / 100;
+    if (options?.adjustedRate !== undefined) {
+      if (!Number.isFinite(options.adjustedRate) || options.adjustedRate <= 0) {
+        throw new Error('A tarifa ajustada deve ser um número válido e maior que zero.');
       }
+      ratePerKm = options.adjustedRate;
+      finalFare = calculateRideFare(ride.passengerDistanceKm, ratePerKm);
+    } else if (options?.adjustedFare !== undefined) {
+      if (!Number.isFinite(options.adjustedFare) || options.adjustedFare <= 0) {
+        throw new Error('O valor ajustado da corrida deve ser um número válido e maior que zero.');
+      }
+      finalFare = Math.min(MAX_RIDE_FARE, Math.round(options.adjustedFare * 100) / 100);
+      if (ride.passengerDistanceKm > 0) {
+        ratePerKm = Math.round((finalFare / ride.passengerDistanceKm) * 100) / 100;
+      }
+    }
+    if (!Number.isFinite(finalFare) || finalFare <= 0) {
+      throw new Error('O valor de pagamento da corrida deve ser um número válido e maior que zero.');
     }
 
     const updatedRide: RideshareRide = {
@@ -397,30 +429,37 @@ export class RideshareService {
     if (await GarageService.getActiveVehicleRental(vehicle.id)) throw new Error('Veículo alugado não pode concluir corridas.');
 
     // Distâncias confirmadas
-    const passengerDist =
-      dto.confirmedPassengerDistanceKm !== undefined && dto.confirmedPassengerDistanceKm > 0
-        ? dto.confirmedPassengerDistanceKm
-        : ride.passengerDistanceKm;
-
-    const pickupDist =
-      dto.confirmedPickupDistanceKm !== undefined && dto.confirmedPickupDistanceKm >= 0
-        ? dto.confirmedPickupDistanceKm
-        : ride.pickupDistanceKm;
+    if (dto.confirmedPassengerDistanceKm !== undefined &&
+      (!Number.isFinite(dto.confirmedPassengerDistanceKm) || dto.confirmedPassengerDistanceKm <= 0)) {
+      throw new Error('A distância com passageiro deve ser um número válido e maior que zero.');
+    }
+    if (dto.confirmedPickupDistanceKm !== undefined &&
+      (!Number.isFinite(dto.confirmedPickupDistanceKm) || dto.confirmedPickupDistanceKm < 0)) {
+      throw new Error('A distância de deslocamento deve ser um número válido e não negativo.');
+    }
+    const passengerDist = dto.confirmedPassengerDistanceKm ?? ride.passengerDistanceKm;
+    const pickupDist = dto.confirmedPickupDistanceKm ?? ride.pickupDistanceKm;
 
     const totalDist = Math.round((passengerDist + pickupDist) * 10) / 10;
+    if (!Number.isFinite(totalDist) || totalDist > Number.MAX_SAFE_INTEGER) {
+      throw new Error('A distância total da corrida excede o limite válido para cálculo.');
+    }
 
     // Recalcula valor caso distância tenha variado e valor fixo não foi fornecido
-    let finalFare = ride.finalFare;
-    if (dto.confirmedFinalFare !== undefined && dto.confirmedFinalFare > 0) {
-      finalFare = Math.round(dto.confirmedFinalFare * 100) / 100;
+    let finalFare = Math.min(MAX_RIDE_FARE, ride.finalFare);
+    if (dto.confirmedFinalFare !== undefined) {
+      if (!Number.isFinite(dto.confirmedFinalFare) || dto.confirmedFinalFare <= 0) {
+        throw new Error('O valor confirmado da corrida deve ser um número válido e maior que zero.');
+      }
+      finalFare = Math.min(MAX_RIDE_FARE, Math.round(dto.confirmedFinalFare * 100) / 100);
     } else if (
       dto.confirmedPassengerDistanceKm !== undefined &&
       dto.confirmedPassengerDistanceKm !== ride.passengerDistanceKm
     ) {
-      finalFare = Math.round(passengerDist * ride.ratePerKm * 100) / 100;
+      finalFare = calculateRideFare(passengerDist, ride.ratePerKm);
     }
 
-    if (finalFare <= 0) {
+    if (!Number.isFinite(finalFare) || finalFare <= 0) {
       throw new Error('O valor de pagamento da corrida deve ser maior que R$ 0,00.');
     }
 
@@ -499,6 +538,7 @@ export class RideshareService {
       passengerDistanceKm: passengerDist,
       pickupDistanceKm: pickupDist,
       totalDistanceKm: totalDist,
+      durationMinutes: calculateRideDurationMinutes(totalDist),
       finalFare,
       completedAt: nowIso,
       transactionId: txResult.transaction.id,
@@ -604,6 +644,12 @@ export class RideshareService {
 
     const allShifts = await this.getAllShifts();
     const totalDurationMinutes = allShifts.reduce((acc, s) => acc + (s.durationMinutes || 0), 0);
+    const completedRideMinutes = (ride: RideshareRide) =>
+      ride.durationMinutes ?? calculateRideDurationMinutes(ride.totalDistanceKm);
+    const shiftRideDurationMinutes = activeShift
+      ? completedRides.filter((ride) => ride.shiftId === activeShift.id).reduce((acc, ride) => acc + completedRideMinutes(ride), 0)
+      : 0;
+    const totalRideDurationMinutes = completedRides.reduce((acc, ride) => acc + completedRideMinutes(ride), 0);
 
     const averageEarningsPerKm =
       totalPaidDistanceKm > 0
@@ -630,6 +676,8 @@ export class RideshareService {
       totalWorkedDistanceKm,
       shiftDurationMinutes,
       totalDurationMinutes,
+      shiftRideDurationMinutes,
+      totalRideDurationMinutes,
       averageEarningsPerKm,
       fuelExpenses,
     };

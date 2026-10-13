@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
 import type { RideshareRide, Vehicle } from '../../types';
 import { formatBRL } from '../../utils/currency';
+import { MAX_RIDE_FARE } from '../../services/rideshareService';
 import {
   DollarSign,
   Fuel,
@@ -32,14 +33,14 @@ export const CompleteRideModal: React.FC<CompleteRideModalProps> = ({
   vehicle,
   onConfirm,
 }) => {
-  if (!ride) return null;
-
-  const [passengerDist, setPassengerDist] = useState<number>(ride.passengerDistanceKm);
-  const [pickupDist, setPickupDist] = useState<number>(ride.pickupDistanceKm);
-  const [finalFare, setFinalFare] = useState<number>(ride.finalFare);
+  const [passengerDist, setPassengerDist] = useState<number>(ride?.passengerDistanceKm ?? 0);
+  const [pickupDist, setPickupDist] = useState<number>(ride?.pickupDistanceKm ?? 0);
+  const [finalFare, setFinalFare] = useState<number>(Math.min(MAX_RIDE_FARE, ride?.finalFare ?? 0));
   const [manualFare, setManualFare] = useState<boolean>(false);
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (!ride) return null;
 
   const totalDist = Math.round((passengerDist + pickupDist) * 10) / 10;
 
@@ -62,7 +63,7 @@ export const CompleteRideModal: React.FC<CompleteRideModalProps> = ({
   const handlePassengerDistChange = (dist: number) => {
     setPassengerDist(dist);
     if (!manualFare) {
-      setFinalFare(Math.round(dist * ride.ratePerKm * 100) / 100);
+      setFinalFare(Math.min(MAX_RIDE_FARE, Math.round(dist * ride.ratePerKm * 100) / 100));
     }
   };
 
@@ -138,7 +139,7 @@ export const CompleteRideModal: React.FC<CompleteRideModalProps> = ({
               onClick={() => {
                 setManualFare(!manualFare);
                 if (manualFare) {
-                  setFinalFare(Math.round(passengerDist * ride.ratePerKm * 100) / 100);
+                  setFinalFare(Math.min(MAX_RIDE_FARE, Math.round(passengerDist * ride.ratePerKm * 100) / 100));
                 }
               }}
               className="text-[11px] text-amber-400 hover:underline cursor-pointer"
@@ -150,9 +151,10 @@ export const CompleteRideModal: React.FC<CompleteRideModalProps> = ({
             type="number"
             step="any"
             min="0"
+            max={MAX_RIDE_FARE}
             value={finalFare}
             onChange={(e) => {
-              setFinalFare(parseFloat(e.target.value) || 0);
+              setFinalFare(Math.min(MAX_RIDE_FARE, parseFloat(e.target.value) || 0));
               setManualFare(true);
             }}
             className="w-full px-3.5 py-2.5 bg-slate-950 border border-emerald-500/40 rounded-xl text-emerald-400 font-mono font-bold text-base focus:outline-none focus:border-emerald-500"
